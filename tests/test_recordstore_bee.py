@@ -39,8 +39,8 @@ class TestAgainstLiveBee(unittest.TestCase):
                 raise RuntimeError("postage batch never became usable")
 
     def _store(self):
-        from recordstore import BeeChunkStore
-        return BeeChunkStore(BEE_API, self.batch)
+        from recordstore import BeeBytesStore
+        return BeeBytesStore(BEE_API, self.batch)
 
     def test_roundtrip_through_bee(self):
         from recordstore import RecordStore

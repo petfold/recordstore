@@ -55,13 +55,13 @@ pip install "recordstore[bee] @ git+https://github.com/petfold/recordstore.git@v
 ```
 
 Python ≥ 3.9. The core imports only the standard library; `requests` is
-needed (and imported lazily) only by `BeeChunkStore`.
+needed (and imported lazily) only by `BeeBytesStore`.
 
 ## The pieces
 
 | Layer | What it does | Implementations |
 |---|---|---|
-| `ChunkStore` | `put(bytes) → ref`, `get(ref) → bytes` | `MemoryChunkStore` (in-memory, testing), `BeeChunkStore` (Swarm Bee node over `/bytes`) |
+| `ChunkStore` | `put(bytes) → ref`, `get(ref) → bytes` | `MemoryChunkStore` (in-memory, testing), `BeeBytesStore` (Swarm Bee node over `/bytes` — the blob endpoint, not the raw `/chunks/{address}` primitive) |
 | trie (internal) | canonical persistent radix trie mapping keys to value chunks | — |
 | `RecordStore` | staging, `commit() → root`, snapshots, sorted prefix iteration | — |
 | `Pointer` | mutable name for the latest root | `MemoryPointer`, `FilePointer` (atomic local file), `SwarmFeedPointer` (documented stub) |

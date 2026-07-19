@@ -10,7 +10,7 @@ Everything documented here is importable from the top-level package:
 ```python
 from recordstore import (
     RecordStore,
-    MemoryChunkStore, BeeChunkStore,
+    MemoryChunkStore, BeeBytesStore,
     MemoryPointer, FilePointer, SwarmFeedPointer,
     canonical_bytes,
 )
@@ -278,11 +278,13 @@ be a stable hex string determined by the content.
 A dict keyed by SHA-256. Use it for tests and ephemeral work; `len(store)`
 gives the chunk count. Data lives only as long as the object.
 
-### `BeeChunkStore(api_url, postage_batch_id, deferred_upload=True)`
+### `BeeBytesStore(api_url, postage_batch_id, deferred_upload=True)`
 
 A real [Swarm Bee](https://docs.ethswarm.org/) node over its HTTP API
-(`POST`/`GET /bytes`). References are Swarm BMT references. Requirements
-and behavior:
+(`POST`/`GET /bytes`) — named for that endpoint specifically: `/bytes` is
+Bee's blob-level API, distinct from the raw `/chunks/{address}` single-chunk
+primitive that this class does not use. References are Swarm BMT
+references. Requirements and behavior:
 
 - **`requests`** is imported lazily inside the constructor — install the
   `[bee]` extra.
@@ -302,9 +304,9 @@ and behavior:
 A quick smoke against a local node:
 
 ```python
-from recordstore import RecordStore, BeeChunkStore
+from recordstore import RecordStore, BeeBytesStore
 
-chunks = BeeChunkStore("http://localhost:1633", "<batch-id>")
+chunks = BeeBytesStore("http://localhost:1633", "<batch-id>")
 store = RecordStore(chunks)
 store.put("hello", {"world": True})
 root = store.commit()
@@ -312,7 +314,7 @@ print(RecordStore.at(root, chunks).get("hello"))
 ```
 
 Because chunks are immutable and content-addressed, mixing backends is
-safe in one direction: anything written through one `BeeChunkStore` is
+safe in one direction: anything written through one `BeeBytesStore` is
 readable through any other Bee node that can retrieve the chunks.
 
 ---
@@ -395,7 +397,7 @@ comparing roots see “no change.”
   so the cache never invalidates). Re-reading the same region of a store or
   snapshot is cheap; a cold open pays one chunk fetch per trie level per
   distinct path.
-- Reads through `BeeChunkStore` are one HTTP roundtrip per (uncached) chunk.
+- Reads through `BeeBytesStore` are one HTTP roundtrip per (uncached) chunk.
   There is no batched fetch yet; if you need to hydrate an entire dataset,
   iterate `keys()` then `get()` — every record is fetched exactly once.
 

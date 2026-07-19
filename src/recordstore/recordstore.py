@@ -96,12 +96,14 @@ class MemoryChunkStore:
         return len(self.chunks)
 
 
-class BeeChunkStore:
-    """Chunk store over a Bee node's HTTP API (POST/GET /bytes).
+class BeeBytesStore:
+    """ChunkStore over a Bee node's `/bytes` endpoint.
 
-    Values larger than one 4 KB chunk are handled transparently: Bee's
-    splitter turns any payload into a chunk tree and returns one reference.
-    Requires a usable postage batch id for writes.
+    Named for the endpoint it actually uses: `/bytes` is Bee's blob-level
+    API, not the raw `/chunks/{address}` single-chunk primitive. Values of
+    any length are handled transparently — Bee's splitter turns the payload
+    into a chunk tree server-side and returns one reference. Requires a
+    usable postage batch id for writes.
     """
 
     def __init__(self, api_url: str, postage_batch_id: str,

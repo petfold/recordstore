@@ -1,7 +1,7 @@
 from .recordstore import (
     RecordStore,
     MemoryChunkStore,
-    BeeChunkStore,
+    BeeBytesStore,
     MemoryPointer,
     FilePointer,
     SwarmFeedPointer,
@@ -11,7 +11,7 @@ from .recordstore import (
 __all__ = [
     "RecordStore",
     "MemoryChunkStore",
-    "BeeChunkStore",
+    "BeeBytesStore",
     "MemoryPointer",
     "FilePointer",
     "SwarmFeedPointer",
