@@ -1,0 +1,358 @@
+# recordstore — User Guide
+
+`recordstore` is a versioned key→record store layered over any
+content-addressed chunk store. This guide covers the concepts, the full
+public API, the canonicity contract, running against a real Swarm/Bee node,
+common versioning patterns, and current limitations.
+
+Everything documented here is importable from the top-level package:
+
+```python
+from recordstore import (
+    RecordStore,
+    MemoryChunkStore, BeeChunkStore,
+    MemoryPointer, FilePointer, SwarmFeedPointer,
+    canonical_bytes,
+)
+```
+
+---
+
+## 1. Concepts
+
+### Records
+
+A **record** is any JSON-compatible value — `dict`, `list`, `str`, number,
+bool, `None` — stored under a **non-empty string key**. Keys are plain
+strings with no imposed structure; because iteration is sorted and
+prefix-filtered, `/`-separated prefixes (`"users/alice"`) give you cheap
+namespacing for free.
+
+### Roots and versions
+
+All records live in a persistent (copy-on-write) compacted radix trie whose
+nodes are chunks in the chunk store. The trie's **root reference** — a hex
+string — identifies one immutable, self-consistent snapshot of the *entire*
+dataset. A root is to a dataset what a commit hash is to a git tree:
+
+- hold a root ⇒ you can read that exact version forever (as long as the
+  chunks exist),
+- compare two roots with `==` ⇒ you know whether two datasets are identical,
+- share a root ⇒ someone else can open the same version.
+
+### Staging and commit
+
+A `RecordStore` accumulates `put`/`delete` calls **in memory**. Nothing
+touches the chunk store until `commit()`, which writes the changed records
+and trie paths and returns the new root. Reads are
+**read-your-writes**: staged changes shadow the committed state, so
+`get`/`keys`/`contains` always reflect what you would see after committing.
+
+Because versions share structure, a commit writes only the chunks along the
+paths that changed; everything else is reused from the previous version.
+
+### The canonicity guarantee
+
+> **Equal content ⇒ equal root.** Two datasets containing the same
+> key→value pairs have byte-identical roots, no matter what sequence of
+> puts, deletes, and commits produced them.
+
+This holds because every encoding in the stack is deterministic:
+
+- **Values** are encoded with `canonical_bytes` — JSON with sorted object
+  keys, minimal separators, UTF-8, `NaN`/`Infinity` rejected (they have no
+  canonical JSON form). Two structurally equal values always produce the
+  same bytes, hence the same chunk reference.
+- **Trie nodes** are canonically encoded, and the trie maintains two
+  structural invariants so its *shape* is a pure function of its contents:
+  a node with no value and no children does not exist, and a node with no
+  value and exactly one child is merged into that child.
+
+Consequences you can rely on:
+
+- deduplication — identical values are stored once;
+- O(1) version comparison — `root_a == root_b`;
+- history independence — replaying operations in any order that reaches the
+  same final content reaches the same root (this is the substrate for
+  building CRDT-style merges above this layer);
+- idempotent commits — committing with nothing staged (or with staged
+  writes equal to what's already stored) returns the same root.
+
+One subtlety: JSON does not distinguish `1` from `1.0`, and Python types
+that JSON normalizes (tuples become lists) come back in their JSON form.
+Store what JSON can represent faithfully.
+
+`canonical_bytes(value)` is exported for anything that needs byte-identical
+encodings of its own (hashing application-level objects, testing).
+
+---
+
+## 2. `RecordStore` API
+
+### Constructing
+
+```python
+RecordStore(chunks, root=None, pointer=None)
+```
+
+- `chunks` — any object satisfying the `ChunkStore` protocol (§3).
+- `root` — open at an existing version. `None` starts from the empty
+  dataset (or from the pointer's value, see next).
+- `pointer` — any object satisfying the `Pointer` protocol (§4). If given
+  and `root` is `None`, the store opens at `pointer.get()`; every
+  successful `commit()` then advances the pointer to the new root.
+
+```python
+RecordStore.at(root, chunks)   # classmethod
+```
+
+Opens a **read-only snapshot** at `root`. Reads work as usual;
+`put`/`delete`/`commit` raise `TypeError`. Use this whenever you want to
+read a version without any risk of writing.
+
+```python
+store.root   # property
+```
+
+The root of the last committed state (staged changes are *not* included —
+it changes only on `commit()`). `None` for a brand-new empty store.
+
+### Reading
+
+```python
+store.get(key)         # → value (deep copy); raises KeyError if absent
+store.contains(key)    # → bool
+store.keys(prefix="")  # → iterator of keys, sorted, staged overlay included
+```
+
+- Returned values are **deep copies** — mutating them never mutates the
+  store. Write changes back with `put`.
+- `keys("users/")` iterates only keys starting with that prefix, in sorted
+  order. The prefix is a plain string prefix, not a path component — 
+  `keys("users")` also matches `"users2/x"`.
+
+### Writing
+
+```python
+store.put(key, value)  # stage an insert/overwrite
+store.delete(key)      # stage a removal; raises KeyError if absent
+```
+
+- `put` validates immediately: the key must be a non-empty string
+  (`ValueError` otherwise) and the value must be canonically encodable
+  (`TypeError`/`ValueError` from the JSON encoder otherwise — this fails
+  fast at `put` time, never at `commit` time).
+- `put` stores a detached copy of the value: mutating your object after
+  `put` does not change what was staged.
+- Staged changes are read-your-writes and can overwrite each other freely;
+  only the final staged state matters at commit.
+
+### Committing
+
+```python
+root = store.commit()  # → new root reference (hex string), or None if the
+                       #   dataset is empty
+```
+
+Flushes staged changes in deterministic (sorted-key) order, updates
+`store.root`, advances the pointer if one is attached, and returns the new
+root. The pointer moves only after every chunk write has succeeded, so a
+reader following the pointer sees all of a commit or none of it.
+
+Deleting a key that was staged-but-never-committed simply drops it;
+committing a delete of a key that never existed in the trie is a no-op.
+
+### Error summary
+
+| Situation | Raised |
+|---|---|
+| `get`/`delete` of a missing key | `KeyError` |
+| empty or non-string key | `ValueError` |
+| non-JSON-encodable value in `put` | `TypeError` / `ValueError` |
+| `NaN` / `Infinity` in a value | `ValueError` |
+| write on a read-only snapshot | `TypeError` |
+| chunk missing from the chunk store | `KeyError` (from the backend) |
+
+---
+
+## 3. Chunk store backends
+
+The `ChunkStore` protocol is two methods:
+
+```python
+class ChunkStore(Protocol):
+    def put(self, data: bytes) -> str: ...   # → reference
+    def get(self, ref: str) -> bytes: ...    # KeyError if missing
+```
+
+Any content-addressed store satisfying it works — the reference just has to
+be a stable hex string determined by the content.
+
+### `MemoryChunkStore()`
+
+A dict keyed by SHA-256. Use it for tests and ephemeral work; `len(store)`
+gives the chunk count. Data lives only as long as the object.
+
+### `BeeChunkStore(api_url, postage_batch_id, deferred_upload=True)`
+
+A real [Swarm Bee](https://docs.ethswarm.org/) node over its HTTP API
+(`POST`/`GET /bytes`). References are Swarm BMT references. Requirements
+and behavior:
+
+- **`requests`** is imported lazily inside the constructor — install the
+  `[bee]` extra.
+- **A usable postage batch id is required for writes.** Against a real
+  (mainnet) node, always purchase a batch yourself and pass its id;
+  batches below ~1 day of validity are rejected by the network, and a
+  fresh purchase takes on the order of a minute to become usable.
+- `deferred_upload=True` (default) returns as soon as the node has the
+  data locally, with push-sync to the network happening in the background;
+  `False` waits. Check network retrievability with Bee's
+  `GET /stewardship/{ref}` if you need the guarantee.
+- Values larger than one 4 KB chunk are handled transparently by Bee's
+  splitter — any payload yields exactly one reference.
+- HTTP timeouts are 120 s; a 404 surfaces as `KeyError`, other HTTP errors
+  as `requests.HTTPError`.
+
+A quick smoke against a local node:
+
+```python
+from recordstore import RecordStore, BeeChunkStore
+
+chunks = BeeChunkStore("http://localhost:1633", "<batch-id>")
+store = RecordStore(chunks)
+store.put("hello", {"world": True})
+root = store.commit()
+print(RecordStore.at(root, chunks).get("hello"))
+```
+
+Because chunks are immutable and content-addressed, mixing backends is
+safe in one direction: anything written through one `BeeChunkStore` is
+readable through any other Bee node that can retrieve the chunks.
+
+---
+
+## 4. Pointers
+
+A root reference identifies a version forever, but something has to name
+“the latest version.” That is a `Pointer`:
+
+```python
+class Pointer(Protocol):
+    def get(self) -> Optional[str]: ...
+    def set(self, root: str) -> None: ...
+```
+
+Attach one at construction and it is read at open and advanced on every
+commit:
+
+```python
+from recordstore import RecordStore, MemoryChunkStore, FilePointer
+
+pointer = FilePointer("/var/lib/myapp/ROOT")
+store = RecordStore(chunks, pointer=pointer)   # opens at the pointed root
+store.put("k", 1)
+store.commit()                                  # pointer now names the new root
+```
+
+- **`MemoryPointer(root=None)`** — in-process only.
+- **`FilePointer(path)`** — one root in a local file; `set` writes a temp
+  file and `os.replace`s it, which is atomic on POSIX, so a crash never
+  leaves a torn pointer. A missing file reads as `None`.
+- **`SwarmFeedPointer`** — a documented stub that raises
+  `NotImplementedError`. A Swarm feed update is a signed single-owner
+  chunk: it must be BMT-hashed and secp256k1-signed client-side, which
+  needs an Ethereum signing dependency and is deliberately out of scope
+  for the stdlib-only core. The `Pointer` interface is the contract;
+  swapping the real implementation in changes nothing above it.
+
+---
+
+## 5. Versioning patterns
+
+**Time travel.** Keep the roots your application cares about (commit ids,
+checkpoints); open any of them later:
+
+```python
+v1 = store.commit()
+store.put("config", {"mode": "fast"})
+v2 = store.commit()
+
+old = RecordStore.at(v1, chunks)   # v1 is untouched by later commits
+```
+
+**Long consistent reads.** Snapshots are immutable, so a reporting job can
+iterate `keys()` and `get()` for hours against one root while writers
+commit new versions concurrently — no locks, no torn reads.
+
+**Cheap change detection.** Two stores (or two moments of one store) are
+equal iff their roots are equal. To sync, compare roots first and walk keys
+only on mismatch.
+
+**Branching.** Open two stores at the same root, let them diverge, and
+commit each — you get two versions sharing most of their structure. There
+is no built-in merge (see §7); equal-content branches converge to the same
+root by canonicity.
+
+**Idempotent writers.** A writer that recomputes and re-puts the same
+records produces the same root — safe to re-run, and downstream consumers
+comparing roots see “no change.”
+
+---
+
+## 6. Performance notes
+
+- **One record = one value chunk**, plus one chunk per trie node along the
+  key's path. Trie nodes are compacted (radix), so path length tracks key
+  *distinctiveness*, not key length.
+- **Commits write O(changed paths) chunks**, not O(dataset).
+- **Trie nodes are cached in memory** after first load (they are immutable,
+  so the cache never invalidates). Re-reading the same region of a store or
+  snapshot is cheap; a cold open pays one chunk fetch per trie level per
+  distinct path.
+- Reads through `BeeChunkStore` are one HTTP roundtrip per (uncached) chunk.
+  There is no batched fetch yet; if you need to hydrate an entire dataset,
+  iterate `keys()` then `get()` — every record is fetched exactly once.
+
+---
+
+## 7. Limitations and roadmap
+
+- **Single writer.** There is no concurrency control: two `RecordStore`
+  instances committing over the same pointer will last-write-win at the
+  pointer level, silently discarding the loser's commit from the "latest"
+  chain (both roots remain readable). Multi-writer merge is an
+  application-layer concern for now; the canonical-root property is the
+  designed foundation for building one.
+- **`SwarmFeedPointer` is a stub** pending a client-side SOC-signing
+  dependency decision (see §4).
+- **No garbage collection.** Old versions' chunks are never deleted by this
+  library. On Swarm, chunk lifetime is governed by postage stamps and the
+  network's GC — content simply expires unless re-stamped or pinned; for
+  `MemoryChunkStore` everything lives until the process exits.
+- **Record schema version.** Every value chunk is wrapped in
+  `{"rsv": 1, "val": ...}`; a future format bump will change `rsv` and
+  readers reject unknown versions rather than misread them. Trie nodes
+  carry an analogous `"tn": 1`.
+- **Key iteration materializes matches.** `keys(prefix)` collects matching
+  keys before yielding (sorted output); very large result sets cost
+  proportional memory.
+
+---
+
+## 8. Testing your own usage
+
+The test suite doubles as executable documentation:
+
+- `tests/test_recordstore.py` — the API contract: canonical roots, snapshot
+  isolation, structural sharing, no aliasing, pointer atomicity.
+- `tests/test_recordstore_fuzz.py` — randomized put/delete histories against
+  a dict oracle, asserting the canonical-root property throughout.
+- `tests/test_recordstore_bee.py` — the same store over a live Bee node
+  (`BEE_API`/`BEE_BATCH` env vars; skips otherwise).
+- `tests/test_boundaries.py` — enforces that module-level imports stay
+  stdlib-only.
+
+When building on the `ChunkStore` or `Pointer` protocols, the
+`MemoryChunkStore`/`MemoryPointer` pairing plus the fuzz test's
+oracle pattern is a good template for validating an implementation.
