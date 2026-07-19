@@ -89,6 +89,18 @@ integration tests skip automatically unless `BEE_API` is set; against a
 real (non-dev) node always provide `BEE_BATCH` with a purchased postage
 batch id.
 
+## Background
+
+This is a Python re-implementation of an old idea — content-addressed,
+canonical-root, versioned key-value storage — best known from Ethereum's
+Merkle Patricia Trie and from Noms/Dolt's "prolly trees." The value here is
+fit, not novelty: a much simpler canonical encoding than MPT (avoiding the
+exact bug class that once caused a chain split), a far smaller scope than
+Dolt/Irmin (no query language, no built-in merge), and — as far as we could
+find — the first implementation of this pattern for Python with a Swarm/Bee
+backend. See the [user guide's background section](docs/USER_GUIDE.md#0-background-is-this-reinventing-the-wheel)
+for the full comparison.
+
 ## Status
 
 Extracted from [petfold/ontodag](https://github.com/petfold/ontodag)

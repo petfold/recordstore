@@ -18,6 +18,91 @@ from recordstore import (
 
 ---
 
+## 0. Background: is this reinventing the wheel?
+
+Short answer: the core idea isn't new, but this particular instantiation
+fills a real gap. Worth reading before you decide whether to build on this
+vs. something else.
+
+### The idea has prior art, and a well-documented failure mode
+
+"Content-addressed trie → canonical root, independent of edit history" is
+the same idea behind Ethereum's **Merkle Patricia Trie**, and behind
+**Noms** (Attic Labs, Go, now dead/archived) and its living successor
+**Dolt** ("Git for data"), whose "prolly trees" achieve the same property
+via content-defined chunking rather than pure key-branching. Academically,
+Auvolat & Taïani's **Merkle Search Trees** (2019) formalize exactly this
+requirement and prove ordinary B-trees don't have it — insertion order can
+change their shape even with identical final content — tracing back to
+Naor & Teague's 2001 work on history-independent data structures.
+
+Getting the canonical-form invariants wrong has real consequences, not just
+theoretical ones:
+
+- Ethereum's MPT needs hex-prefix encoding to disambiguate leaf vs.
+  extension nodes and odd/even nibble parity — precisely the "empty node
+  with one child" ambiguity this trie's canonicalization rules close.
+  Early implementations (`geth` vs `ethereumj`) diverged on root hash after
+  just two inserts into an empty trie.
+- In November 2016, `geth` and Parity handled an edge case (empty-account
+  deletion under EIP-161) differently under out-of-gas conditions,
+  producing different state roots for identical transaction histories —
+  an actual chain fork at block 2,686,351.
+- IPFS's own UnixFS HAMT is **not** canonical — its CID depends on chunk
+  size and DAG balancing, a limitation still being addressed years later
+  (IPIP-499).
+
+So: people keep needing this, keep reinventing it, and keep getting subtle
+parts of it wrong. This library's two canonicalization rules (§1, "The
+canonicity guarantee") are the minimal fix for the same failure class MPT
+took years of bugs to close — closer in spirit to MPT's pure radix-branching
+approach than to prolly trees' content-defined chunking, which trades a
+probabilistic depth-balancing guarantee (useful under adversarial or
+long-shared-prefix key sets) for a mechanism this codebase doesn't need at
+its current scale.
+
+Related but distinct ideas, for context: **Merkle-CRDTs** (Protocol Labs)
+and Git's own object model don't have this property, for different
+reasons — Merkle-CRDTs are a causal DAG of deltas with no single
+"current state" root, and Git trees, while genuinely canonical, are
+hierarchical paths rather than a flat key-value map with point lookup.
+
+### Where the actual value is
+
+Not the idea — the fit:
+
+- **Simpler encoding than MPT, in exactly the place MPT kept breaking.**
+  Plain byte prefixes and canonical JSON instead of nibble-packed RLP:
+  same canonicity guarantee, far less surface area for the encoding bugs
+  above.
+- **Much smaller than its closest relatives.** Dolt is a full SQL database;
+  Irmin is a general Git-like store with branching and merge built in.
+  This library deliberately has neither — merge is left to the application
+  layer (see `docs/SWARM_DESIGN.md` §5 in the OntoDAG repo) — because the
+  consuming use case only ever needed put/get/commit/snapshot with a
+  canonical root, not a database engine.
+- **First Python + Swarm instance of this pattern, as far as we found.**
+  Noms is dead, Dolt and Irmin are Go/OCaml with much larger footprints,
+  and IPLD's own "prolly tree" ADL spec isn't finalized. Nothing turned up
+  filling "small, dependency-light, Python, pluggable content-addressed
+  backend including Bee."
+
+### If you need cross-language interop
+
+If roots ever need to be produced identically from Go, JS, or another
+language, the relevant prior art is **IPLD**'s approach: a CID tags both
+codec and hash function, and **dag-cbor**/**dag-json** are *deterministic*
+codec specs (sorted map keys, no duplicate keys, shortest-form numbers) —
+not "canonical JSON" left to each language's own encoder. IPLD backs this
+with published cross-language test fixtures (hex blocks + expected CIDs)
+that Go/JS/Python implementations must all reproduce. That fixture-suite
+approach — not just a prose spec — is what would have caught the
+`geth`/`ethereumj` divergence before it shipped, and is the template to
+follow if this store's wire format ever needs a second-language
+implementation.
+
+---
+
 ## 1. Concepts
 
 ### Records
