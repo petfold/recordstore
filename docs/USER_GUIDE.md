@@ -411,8 +411,14 @@ comparing roots see “no change.”
   chain (both roots remain readable). Multi-writer merge is an
   application-layer concern for now; the canonical-root property is the
   designed foundation for building one.
-- **`SwarmFeedPointer` is a stub** pending a client-side SOC-signing
-  dependency decision (see §4).
+- **`SwarmFeedPointer` is a stub.** The signing-dependency question is now
+  settled: it will be built on the `swarm-bee` package behind a
+  `recordstore[feeds]` extra (verified correct against a live node), and
+  `get()` will need retry-until-stable plus read-your-writes caching because
+  Swarm feed *lookups* are unreliable per call on a light node — swarmfs's
+  `bzzf://` layer is the reference implementation. Full rationale and the
+  measured flakiness are in the `SwarmFeedPointer` docstring in
+  `recordstore.py`.
 - **No garbage collection.** Old versions' chunks are never deleted by this
   library. On Swarm, chunk lifetime is governed by postage stamps and the
   network's GC — content simply expires unless re-stamped or pinned; for

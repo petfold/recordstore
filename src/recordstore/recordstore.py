@@ -339,9 +339,33 @@ class SwarmFeedPointer:
     BMT-hashed and secp256k1-signed with the feed owner's key client-side,
     then posted to Bee's /soc/{owner}/{id} endpoint; lookups go through
     GET /feeds/{owner}/{topic}. Doing this properly needs an Ethereum
-    signing dependency (e.g. eth-keys/coincurve), so it is deliberately
-    out of scope for this stdlib-only first cut. The interface is the
-    contract; swapping this in changes nothing above it.
+    signing dependency, so it is deliberately out of scope for this
+    stdlib-only first cut. The interface is the contract; swapping this in
+    changes nothing above it.
+
+    Implementation plan (when built):
+    - Depend on the ``swarm-bee`` package behind a ``recordstore[feeds]``
+      extra, not this core. It does the SOC/secp256k1 signing correctly
+      (independently verified against a live Bee 2.8.1 node, 2026-07),
+      via ``feeds.update_feed_with_reference`` (set) and ``fetch_latest``
+      (get). This keeps the core stdlib-only.
+    - ``get()`` MUST NOT trust a single feed lookup. On a light node —
+      especially over a high-latency link — Bee's feed lookup is unreliable
+      per call: in one measurement it returned 404 on ~10/12 calls, and the
+      *correct* latest index on the rest (never a wrong/stale value). The
+      underlying SOC chunks push-sync and are individually retrievable fine;
+      it is the *lookup* (which must fetch candidate index chunks from the
+      network) that flakes. So ``get()`` needs retry-until-stable (~15-20
+      tries with backoff at ~17% per-call success) plus read-your-writes
+      caching: after ``set(ref)``, serve ``ref`` from a local cache and
+      never round-trip the network for our own write.
+    - swarmfs already solves this exact Swarm property (``feed_ttl`` +
+      immediate self-refresh on own commits, polling for others'); use its
+      ``bzzf://`` feed layer as the reference implementation rather than
+      reinventing the policy.
+    This is a Swarm/light-node characteristic, not a swarm-bee defect — any
+    client hits it identically. See the bee-client repo's evaluation for
+    the full measurement.
     """
 
     def __init__(self, *_, **__):
