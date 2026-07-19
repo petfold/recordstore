@@ -351,14 +351,23 @@ class SwarmFeedPointer:
       (get). This keeps the core stdlib-only.
     - ``get()`` MUST NOT trust a single feed lookup. On a light node —
       especially over a high-latency link — Bee's feed lookup is unreliable
-      per call: in one measurement it returned 404 on ~10/12 calls, and the
-      *correct* latest index on the rest (never a wrong/stale value). The
-      underlying SOC chunks push-sync and are individually retrievable fine;
-      it is the *lookup* (which must fetch candidate index chunks from the
-      network) that flakes. So ``get()`` needs retry-until-stable (~15-20
-      tries with backoff at ~17% per-call success) plus read-your-writes
-      caching: after ``set(ref)``, serve ``ref`` from a local cache and
-      never round-trip the network for our own write.
+      per call, in two modes: it returns 404 ("lookup at failed"; ~10/12
+      calls in one hotspot measurement) or a *stale early* index instead of
+      the latest (see ethersphere/bee#5251). The underlying SOC chunks
+      push-sync and are individually retrievable fine (``/chunks`` and
+      ``/stewardship`` → 200); it is the *lookup* (which must fetch
+      candidate index chunks from the network) that flakes. So ``get()``
+      needs retry-until-stable (~15-20 tries with backoff) plus
+      read-your-writes caching: after ``set(ref)``, serve ``ref`` from a
+      local cache and never round-trip the network for our own write.
+    - Pass the cached last-known index to Bee as the ``after`` query hint
+      (``GET /feeds/{owner}/{topic}?after=N``) so the lookup starts from
+      there instead of probing from scratch — this is what makes retries
+      cheap and reliable. swarm-bee's ``fetch_latest`` does NOT currently
+      send this hint (probes from scratch every call), so either extend it
+      or call the endpoint with the param directly; a candidate upstream
+      contribution too. This turns the read-your-writes cache into a lookup
+      accelerator, not just a correctness shim.
     - swarmfs already solves this exact Swarm property (``feed_ttl`` +
       immediate self-refresh on own commits, polling for others'); use its
       ``bzzf://`` feed layer as the reference implementation rather than
