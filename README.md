@@ -16,7 +16,13 @@ Module-level imports are stdlib-only; `requests` is imported lazily inside
 `BeeChunkStore` methods.
 
 Extracted from [petfold/ontodag](https://github.com/petfold/ontodag) (July 2026) with
-history preserved; its test suite currently lives there.
+history preserved.
+
+```bash
+python3 -m pytest tests/                                 # unit + fuzz + boundary tests
+BEE_API=http://<node>:1633 BEE_BATCH=<batchID> \
+    python3 -m pytest tests/test_recordstore_bee.py -v   # live Bee node integration
+```
 
 ```bash
 pip install "recordstore @ git+https://github.com/petfold/recordstore.git@v0.1.0"
