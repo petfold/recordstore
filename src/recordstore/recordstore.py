@@ -400,6 +400,7 @@ class SwarmFeedPointer:
     ):
         try:
             from bee import Bee
+            from bee.feeds import make_feed_identifier
             from bee.swarm.keys import PrivateKey
             from bee.swarm.typed_bytes import BatchId, EthAddress, Reference, Topic
             from bee.swarm.errors import BeeResponseError
@@ -410,6 +411,7 @@ class SwarmFeedPointer:
             ) from e
 
         self._Reference = Reference
+        self._make_feed_identifier = make_feed_identifier
         self._BeeResponseError = BeeResponseError
         self._bee = Bee(api_url)
         self._topic = Topic.from_string(topic)
@@ -464,24 +466,35 @@ class SwarmFeedPointer:
         delay = self._backoff
         for attempt in range(self._max_retries):
             try:
+                # The lookup resolves the latest index; the reference itself is
+                # read from the feed's single-owner chunk, NOT from the lookup
+                # body — Bee dereferences a plain feed GET and returns the
+                # pointed-to content, not the reference.
                 update = self._bee.feeds.fetch_latest(self._owner, self._topic)
-            except self._BeeResponseError as e:
-                if getattr(e, "status", None) not in (404, 500):
-                    raise
-                # transient flake or empty feed; fall through to backoff/retry.
-            else:
-                # payload is timestamp(8 BE) || reference; strip the timestamp.
-                ref = update.payload[8:].hex()
                 if update.index_next >= self._next_index:
+                    identifier = self._make_feed_identifier(self._topic, update.index)
+                    soc = self._bee.file.download_soc(self._owner, identifier)
+                    ref = self._soc_reference(soc)
                     self._cached_ref = ref
                     self._next_index = update.index_next
                     self._cache_expiry = time.monotonic() + self._ttl
                     return ref
-                # stale-early: a fresher update exists; retry for it.
+                # else stale-early: a fresher update exists; retry for it.
+            except self._BeeResponseError as e:
+                if getattr(e, "status", None) not in (404, 500):
+                    raise
+                # transient flake or empty feed; fall through to backoff/retry.
             if attempt < self._max_retries - 1:
                 time.sleep(delay)
                 delay = min(delay * 2, self._backoff_cap)
         return self._cached_ref  # last-known ref, or None if never resolved
+
+    @staticmethod
+    def _soc_reference(soc) -> Ref:
+        # SOC payload is timestamp(8 BE) || reference; strip the timestamp.
+        payload = soc.payload
+        payload = payload.as_bytes() if hasattr(payload, "as_bytes") else bytes(payload)
+        return payload[8:].hex()
 
 
 # ---------------------------------------------------------------------------
