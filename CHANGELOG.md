@@ -4,6 +4,23 @@ All notable changes to this project are documented here. The format is based on
 [Keep a Changelog](https://keepachangelog.com/), and this project adheres to
 [Semantic Versioning](https://semver.org/).
 
+## [0.8.0] — 2026-07-20
+
+### Added
+
+- **`RecordStore.merge(bytes_store, base, ours, theirs, resolver=None)`** —
+  canonical three-way merge of two roots that diverged from a common `base`,
+  returning the merged root. A change on one side is taken; the same change on
+  both sides is taken once; different changes to the same key conflict. By
+  default conflicts raise **`MergeConflict`** (`.conflicts` lists the keys) —
+  nothing is dropped silently — or a `resolver(key, base, ours, theirs)` settles
+  them (each arg is the value or the `ABSENT` sentinel; return a value or the
+  `DELETE` sentinel). Reference equality makes unchanged subtrees merge for
+  free, and only the merged diff is written (shared with `base`). Commutative
+  when the resolver is symmetric in ours/theirs (the default raise is). This is
+  the primitive for multi-writer reconciliation over a `SwarmFeedPointer`.
+- New exports: `MergeConflict`, `ABSENT`, `DELETE`.
+
 ## [0.7.1] — 2026-07-20
 
 ### Changed

@@ -91,6 +91,23 @@ class TestAgainstLiveBee(unittest.TestCase):
         reopened = RecordStore.at(root, blobs)  # fresh cache => real fetches
         self.assertEqual(dict(reopened.items()), expected)
 
+    def test_three_way_merge_over_bee(self):
+        from recordstore import RecordStore
+        blobs = self._store()
+
+        def root(mapping):
+            rs = RecordStore(blobs)
+            for k, v in mapping.items():
+                rs.put(k, v)
+            return rs.commit()
+
+        base = root({"a": 1, "b": 2, "c": 3})
+        ours = root({"a": 10, "b": 2, "c": 3})    # changed a
+        theirs = root({"a": 1, "b": 20, "c": 3})  # changed b
+        merged = RecordStore.merge(blobs, base, ours, theirs)
+        self.assertEqual(dict(RecordStore.at(merged, blobs).items()),
+                         {"a": 10, "b": 20, "c": 3})
+
     def test_snapshot_isolation_over_bee(self):
         from recordstore import RecordStore
         blobs = self._store()

@@ -41,6 +41,24 @@ Ref = str  # hex-encoded reference to a stored blob
 _SCHEMA_VERSION = 1
 _TOMBSTONE = object()
 
+# Merge sentinels (see RecordStore.merge).
+ABSENT = object()   # a resolver sees this for a side where the key is absent
+DELETE = object()   # a resolver returns this to drop a key from the merge
+
+
+class MergeConflict(Exception):
+    """Raised by `RecordStore.merge` when both sides changed the same key to
+    different values and no `resolver` settled it. `.conflicts` is the list of
+    conflicting keys."""
+
+    def __init__(self, conflicts):
+        self.conflicts = list(conflicts)
+        shown = ", ".join(sorted(self.conflicts)[:5])
+        if len(self.conflicts) > 5:
+            shown += ", ..."
+        super().__init__(
+            f"unresolved merge conflict on {len(self.conflicts)} key(s): {shown}")
+
 
 # ---------------------------------------------------------------------------
 # Canonical encoding
@@ -905,4 +923,88 @@ class RecordStore:
         self._root = root
         if self._pointer is not None and root is not None:
             self._pointer.set(root)
+        return root
+
+    # -- merge ----------------------------------------------------------------
+
+    @classmethod
+    def merge(cls, bytes_store: BytesStore, base: Optional[Ref],
+              ours: Optional[Ref], theirs: Optional[Ref], resolver=None) -> Optional[Ref]:
+        """Three-way merge of two roots that diverged from a common `base`.
+
+        Returns the merged root. Because roots are canonical, this leans on
+        reference equality: if a subtree is unchanged on a side its root ref
+        still equals `base`'s, so whole branches merge for free.
+
+        Per key: a change made on only one side is taken; a change made on both
+        sides to the *same* value is taken once; a change made on both sides to
+        *different* values is a conflict. Conflicts are settled by
+        ``resolver(key, base, ours, theirs)`` — each argument is the decoded
+        value or the ``ABSENT`` sentinel; return the value to keep, or the
+        ``DELETE`` sentinel to drop the key. Without a resolver, conflicts raise
+        `MergeConflict`. The merge is commutative iff the resolver is symmetric
+        in its ours/theirs arguments (the built-in conflict = raise is).
+
+        Only the merged diff is written (applied to `base`, bulk-flushed), so
+        unchanged subtrees are shared with `base`. Reading the diff currently
+        scans the three roots in full; skipping equal subtrees during the scan
+        is a future optimisation.
+        """
+        if ours == theirs:
+            return ours                       # identical (incl. both None)
+        if ours == base:
+            return theirs                     # only they changed
+        if theirs == base:
+            return ours                       # only we changed
+
+        trie = _Trie(bytes_store)
+        base_items = {k: r for k, r in trie.items(base)}
+        our_items = {k: r for k, r in trie.items(ours)}
+        their_items = {k: r for k, r in trie.items(theirs)}
+
+        changes: Dict[bytes, object] = {}     # key -> value_ref | _TOMBSTONE
+        conflicts: List[str] = []
+        for k in set(base_items) | set(our_items) | set(their_items):
+            b = base_items.get(k)
+            o = our_items.get(k)
+            t = their_items.get(k)
+            if o == t:
+                merged = o                    # same on both sides
+            elif o == b:
+                merged = t                    # unchanged by us -> take theirs
+            elif t == b:
+                merged = o                    # unchanged by them -> take ours
+            elif resolver is None:
+                conflicts.append(k.decode("utf-8"))
+                continue
+            else:
+                decode = (lambda r: _decode_value(bytes_store.get(r))
+                          if r is not None else ABSENT)
+                res = resolver(k.decode("utf-8"), decode(b), decode(o), decode(t))
+                if res is DELETE:
+                    merged = None
+                else:
+                    merged = bytes_store.put(_encode_value(res))
+            if merged != b:
+                changes[k] = merged if merged is not None else _TOMBSTONE
+
+        if conflicts:
+            raise MergeConflict(conflicts)
+
+        # Apply only the diff to base (O(diff) node writes, bulk-flushed).
+        root = base
+        trie._buffering = True
+        try:
+            for k in sorted(changes):
+                c = changes[k]
+                if c is _TOMBSTONE:
+                    try:
+                        root = trie.delete(root, k)
+                    except KeyError:
+                        pass
+                else:
+                    root = trie.insert(root, k, c)
+            root = trie._flush(root)
+        finally:
+            trie._reset_buffer()
         return root

@@ -396,10 +396,38 @@ commit new versions concurrently — no locks, no torn reads.
 equal iff their roots are equal. To sync, compare roots first and walk keys
 only on mismatch.
 
-**Branching.** Open two stores at the same root, let them diverge, and
-commit each — you get two versions sharing most of their structure. There
-is no built-in merge (see §7); equal-content branches converge to the same
-root by canonicity.
+**Branching and merge.** Open two stores at the same root, let them diverge,
+and commit each — two versions sharing most of their structure (equal-content
+branches converge to the same root by canonicity). Reconcile them with a
+three-way merge against their common ancestor:
+
+```python
+from recordstore import RecordStore, MergeConflict, ABSENT, DELETE
+
+merged = RecordStore.merge(blobs, base_root, our_root, their_root)
+```
+
+A change made on only one side is taken; the same change on both sides is
+taken once; a change made on both sides to *different* values is a conflict.
+By default a conflict raises `MergeConflict` (its `.conflicts` lists the
+keys) — nothing is silently dropped. Supply a `resolver` to settle them:
+
+```python
+def resolver(key, base, ours, theirs):   # each is the value or ABSENT
+    if ours is ABSENT or theirs is ABSENT:
+        return DELETE                    # e.g. delete wins over modify
+    return max(ours, theirs)             # your policy
+
+merged = RecordStore.merge(blobs, base, ours, theirs, resolver=resolver)
+```
+
+The merge is efficient by canonicity: unchanged subtrees have equal refs on
+both sides and merge for free, and only the merged diff is written (shared
+with `base`). It is commutative when the resolver is symmetric in its
+ours/theirs arguments (the built-in raise-on-conflict is). This is the
+primitive for multi-writer reconciliation over a `SwarmFeedPointer`: on
+detecting the feed advanced past your last root, merge your root with the
+feed's against the base you both branched from, then commit the result.
 
 **Idempotent writers.** A writer that recomputes and re-puts the same
 records produces the same root — safe to re-run, and downstream consumers
@@ -439,12 +467,15 @@ comparing roots see “no change.”
 
 ## 7. Limitations and roadmap
 
-- **Single writer.** There is no concurrency control: two `RecordStore`
-  instances committing over the same pointer will last-write-win at the
-  pointer level, silently discarding the loser's commit from the "latest"
-  chain (both roots remain readable). Multi-writer merge is an
-  application-layer concern for now; the canonical-root property is the
-  designed foundation for building one.
+- **No automatic concurrency control.** Two `RecordStore` instances committing
+  over the same pointer still last-write-win *at the pointer level* — the
+  loser's commit drops off the "latest" chain (both roots remain readable). The
+  library does not detect this for you. What it now provides is the
+  reconciliation primitive: `RecordStore.merge(base, ours, theirs)` (§5) does a
+  canonical three-way merge, so an application that notices its pointer advanced
+  can merge and re-commit. Wiring that detect-merge-retry loop into
+  `SwarmFeedPointer` automatically (so concurrent writers converge without
+  application code) is the remaining step.
 - **Swarm feed lookups are unreliable per call.** `SwarmFeedPointer`
   (implemented in v0.4.0, see §4) works around this — read-your-writes cache,
   monotonic write-index floor, and retry-until-stable reads with a stale-early

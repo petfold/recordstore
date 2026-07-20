@@ -38,8 +38,11 @@ and nothing more:
 - **Canonical roots** — encodings are deterministic, so **equal content
   produces an equal root reference**, regardless of the insertion/deletion
   history that produced it. Versions are content-addressable, comparable
-  with a string equality check, and cheap to diff and merge above this
-  layer.
+  with a string equality check, and cheap to diff.
+- **Three-way merge** — `RecordStore.merge(base, ours, theirs)` reconciles
+  two divergent versions; canonicity makes unchanged subtrees merge for free
+  and equal edits conflict-free, with conflicts raised (or settled by a
+  resolver). The building block for multi-writer use.
 - **Structural sharing** — versions are stored as a persistent
   (copy-on-write) compacted radix trie; a commit writes only the blobs
   along the changed paths, and unchanged subtrees are shared between
@@ -48,13 +51,13 @@ and nothing more:
 ## Install
 
 ```bash
-pip install "recordstore @ git+https://github.com/petfold/recordstore.git@v0.7.1"
+pip install "recordstore @ git+https://github.com/petfold/recordstore.git@v0.8.0"
 
 # with the Bee (Swarm) bytes backend's HTTP dependency:
-pip install "recordstore[bee] @ git+https://github.com/petfold/recordstore.git@v0.7.1"
+pip install "recordstore[bee] @ git+https://github.com/petfold/recordstore.git@v0.8.0"
 
 # with the Swarm feed pointer (adds swarm-bee for SOC/secp256k1 signing):
-pip install "recordstore[feeds] @ git+https://github.com/petfold/recordstore.git@v0.7.1"
+pip install "recordstore[feeds] @ git+https://github.com/petfold/recordstore.git@v0.8.0"
 ```
 
 Python ≥ 3.9. The core imports only the standard library; both extra
@@ -104,7 +107,8 @@ canonical-root, versioned key-value storage — best known from Ethereum's
 Merkle Patricia Trie and from Noms/Dolt's "prolly trees." The value here is
 fit, not novelty: a much simpler canonical encoding than MPT (avoiding the
 exact bug class that once caused a chain split), a far smaller scope than
-Dolt/Irmin (no query language, no built-in merge), and — as far as we could
+Dolt/Irmin (no query language; a single three-way merge primitive, not a
+merge engine), and — as far as we could
 find — the first implementation of this pattern for Python with a Swarm/Bee
 backend. See the [user guide's background section](docs/USER_GUIDE.md#0-background-is-this-reinventing-the-wheel)
 for the full comparison.
@@ -115,6 +119,8 @@ Extracted from [petfold/ontodag](https://github.com/petfold/ontodag)
 (July 2026) with history preserved; validated against a live Bee 2.8.1
 light node on Gnosis mainnet (roundtrips, canonical roots on real BMT
 references, network retrievability). `SwarmFeedPointer` (owner-signed Swarm
-feed, over `swarm-bee`) landed in v0.4.0. Known gaps — single-writer only
-(no concurrency control), one blob per record — are detailed in the
+feed, over `swarm-bee`) landed in v0.4.0; three-way `merge` in v0.8.0. Known
+gaps — no automatic multi-writer concurrency control (the `merge` primitive
+is provided, but the detect-merge-retry loop is not yet wired into the feed
+pointer), one blob per record — are detailed in the
 [user guide](docs/USER_GUIDE.md#limitations-and-roadmap).

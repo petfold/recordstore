@@ -5,6 +5,9 @@ from .recordstore import (
     MemoryPointer,
     FilePointer,
     SwarmFeedPointer,
+    MergeConflict,
+    ABSENT,
+    DELETE,
     canonical_bytes,
 )
 
@@ -15,5 +18,8 @@ __all__ = [
     "MemoryPointer",
     "FilePointer",
     "SwarmFeedPointer",
+    "MergeConflict",
+    "ABSENT",
+    "DELETE",
     "canonical_bytes",
 ]

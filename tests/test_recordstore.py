@@ -22,7 +22,8 @@ import os
 import tempfile
 import unittest
 
-from recordstore import FilePointer, MemoryBytesStore, MemoryPointer, RecordStore
+from recordstore import (ABSENT, DELETE, FilePointer, MemoryBytesStore,
+                         MergeConflict, MemoryPointer, RecordStore)
 
 
 def make(bytes_store=None, pointer=None):
@@ -378,6 +379,110 @@ class TestBulkCommit(unittest.TestCase):
         root = rs.commit()
         self.assertEqual(dict(RecordStore.at(root, store).items()),
                          {"b": 22, "c": 3})
+
+
+class TestMerge(unittest.TestCase):
+    def setUp(self):
+        self.store = MemoryBytesStore()
+
+    def _root(self, mapping):
+        rs = RecordStore(self.store)
+        for k, v in mapping.items():
+            rs.put(k, v)
+        return rs.commit()
+
+    def _dict(self, root):
+        return dict(RecordStore.at(root, self.store).items())
+
+    def test_disjoint_changes_merge(self):
+        base = self._root({"a": 1, "b": 2, "c": 3})
+        ours = self._root({"a": 10, "b": 2, "c": 3})
+        theirs = self._root({"a": 1, "b": 20, "c": 3})
+        m = RecordStore.merge(self.store, base, ours, theirs)
+        self.assertEqual(self._dict(m), {"a": 10, "b": 20, "c": 3})
+
+    def test_same_change_on_both_sides(self):
+        base = self._root({"a": 1})
+        side = self._root({"a": 2})
+        m = RecordStore.merge(self.store, base, side, self._root({"a": 2}))
+        self.assertEqual(self._dict(m), {"a": 2})
+        self.assertEqual(m, side)
+
+    def test_fast_paths(self):
+        base = self._root({"a": 1})
+        ours = self._root({"a": 2})
+        self.assertEqual(RecordStore.merge(self.store, base, ours, base), ours)
+        self.assertEqual(RecordStore.merge(self.store, base, base, ours), ours)
+        self.assertEqual(RecordStore.merge(self.store, base, ours, ours), ours)
+
+    def test_conflict_raises_by_default(self):
+        base = self._root({"a": 1})
+        with self.assertRaises(MergeConflict) as cm:
+            RecordStore.merge(self.store, base,
+                              self._root({"a": 2}), self._root({"a": 3}))
+        self.assertEqual(cm.exception.conflicts, ["a"])
+
+    def test_conflict_resolved(self):
+        base = self._root({"a": 1})
+        m = RecordStore.merge(self.store, base,
+                              self._root({"a": 2}), self._root({"a": 3}),
+                              resolver=lambda k, b, o, t: max(o, t))
+        self.assertEqual(self._dict(m), {"a": 3})
+
+    def test_add_add_conflict(self):
+        base = self._root({})
+        ours = self._root({"new": "ours"})
+        theirs = self._root({"new": "theirs"})
+        with self.assertRaises(MergeConflict):
+            RecordStore.merge(self.store, base, ours, theirs)
+        m = RecordStore.merge(self.store, base, ours, theirs,
+                              resolver=lambda k, b, o, t: o)
+        self.assertEqual(self._dict(m), {"new": "ours"})
+
+    def test_delete_on_one_side(self):
+        base = self._root({"a": 1, "b": 2})
+        ours = self._root({"a": 1})              # deleted b
+        theirs = base
+        m = RecordStore.merge(self.store, base, ours, theirs)
+        self.assertEqual(self._dict(m), {"a": 1})
+
+    def test_delete_vs_modify_conflict(self):
+        base = self._root({"a": 1})
+        ours = self._root({})                    # deleted a
+        theirs = self._root({"a": 2})            # modified a
+        with self.assertRaises(MergeConflict):
+            RecordStore.merge(self.store, base, ours, theirs)
+        seen = {}
+
+        def r(k, b, o, t):
+            seen.update(base=b, ours=o, theirs=t)
+            return t
+
+        m = RecordStore.merge(self.store, base, ours, theirs, resolver=r)
+        self.assertEqual(seen, {"base": 1, "ours": ABSENT, "theirs": 2})
+        self.assertEqual(self._dict(m), {"a": 2})
+
+    def test_resolver_delete_sentinel(self):
+        base = self._root({"a": 1})
+        m = RecordStore.merge(self.store, base,
+                              self._root({"a": 2}), self._root({"a": 3}),
+                              resolver=lambda k, b, o, t: DELETE)
+        self.assertEqual(self._dict(m), {})
+
+    def test_merge_is_canonical_and_commutative(self):
+        base = self._root({"a": 1, "b": 2, "c": 3})
+        ours = self._root({"a": 10, "b": 2, "c": 3})
+        theirs = self._root({"a": 1, "b": 20, "c": 3})
+        m1 = RecordStore.merge(self.store, base, ours, theirs)
+        m2 = RecordStore.merge(self.store, base, theirs, ours)
+        direct = self._root({"a": 10, "b": 20, "c": 3})
+        self.assertEqual(m1, m2)       # commutative (canonical roots)
+        self.assertEqual(m1, direct)   # == a direct build of the merged content
+
+    def test_merge_no_common_ancestor(self):
+        m = RecordStore.merge(self.store, None,
+                              self._root({"a": 1}), self._root({"b": 2}))
+        self.assertEqual(self._dict(m), {"a": 1, "b": 2})
 
 
 if __name__ == "__main__":
