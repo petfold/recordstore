@@ -346,12 +346,27 @@ store.commit()                                  # pointer now names the new root
 - **`FilePointer(path)`** — one root in a local file; `set` writes a temp
   file and `os.replace`s it, which is atomic on POSIX, so a crash never
   leaves a torn pointer. A missing file reads as `None`.
-- **`SwarmFeedPointer`** — a documented stub that raises
-  `NotImplementedError`. A Swarm feed update is a signed single-owner
-  chunk: it must be BMT-hashed and secp256k1-signed client-side, which
-  needs an Ethereum signing dependency and is deliberately out of scope
-  for the stdlib-only core. The `Pointer` interface is the contract;
-  swapping the real implementation in changes nothing above it.
+- **`SwarmFeedPointer(api_url, topic, *, signer=None, owner=None,
+  postage_batch_id=None, ...)`** — the "latest root" as an owner-signed
+  Swarm feed. Each `set` publishes a signed single-owner chunk (SOC);
+  `get` resolves the latest via a feed lookup. Needs the `swarm-bee`
+  package (`pip install "recordstore[feeds]"`) for the BMT/secp256k1
+  signing, imported lazily so the core stays stdlib-only.
+
+  Pass a `signer` (32-byte secp256k1 private key, hex) to read and write —
+  the owner address is derived from it; or an `owner` address (hex) for a
+  read-only pointer. Writing also needs a `postage_batch_id`. `topic` is a
+  namespace string hashed to the feed topic.
+
+  Because Swarm feed *lookups* are unreliable per call on a light node
+  (transient 404s, or a stale-early index — see §7), `SwarmFeedPointer`
+  does not trust a single lookup: it serves your own writes from a
+  read-your-writes cache (`feed_ttl` seconds), floors the write index
+  monotonically so back-to-back commits never collide, and retries cold
+  reads with exponential backoff, ignoring a result that regresses below
+  the newest index it has seen. A never-written feed resolves to `None`
+  after the retries exhaust (which `RecordStore` treats as the empty
+  dataset). The retry/backoff/TTL knobs are constructor arguments.
 
 ---
 
@@ -411,14 +426,16 @@ comparing roots see “no change.”
   chain (both roots remain readable). Multi-writer merge is an
   application-layer concern for now; the canonical-root property is the
   designed foundation for building one.
-- **`SwarmFeedPointer` is a stub.** The signing-dependency question is now
-  settled: it will be built on the `swarm-bee` package behind a
-  `recordstore[feeds]` extra (verified correct against a live node), and
-  `get()` will need retry-until-stable plus read-your-writes caching because
-  Swarm feed *lookups* are unreliable per call on a light node — swarmfs's
-  `bzzf://` layer is the reference implementation. Full rationale and the
-  measured flakiness are in the `SwarmFeedPointer` docstring in
-  `recordstore.py`.
+- **Swarm feed lookups are unreliable per call.** `SwarmFeedPointer`
+  (implemented in v0.4.0, see §4) works around this — read-your-writes cache,
+  monotonic write-index floor, and retry-until-stable reads with a stale-early
+  guard, following swarmfs's `bzzf://` layer. Two rough edges remain: the
+  `after` index hint that would let Bee resume a lookup from a known index
+  (making retries cheap) is not wired, because `swarm-bee`'s typed feed API
+  does not expose it; and a never-written feed only resolves to `None` after
+  the retries exhaust, so opening a brand-new feed-backed store pays that
+  cost once. Full rationale and the measured flakiness are in the
+  `SwarmFeedPointer` docstring in `recordstore.py`.
 - **No garbage collection.** Old versions' blobs are never deleted by this
   library. On Swarm, chunk lifetime is governed by postage stamps and the
   network's GC — content simply expires unless re-stamped or pinned; for
@@ -443,6 +460,10 @@ The test suite doubles as executable documentation:
   a dict oracle, asserting the canonical-root property throughout.
 - `tests/test_recordstore_bee.py` — the same store over a live Bee node
   (`BEE_API`/`BEE_BATCH` env vars; skips otherwise).
+- `tests/test_recordstore_feed.py` — `SwarmFeedPointer` over a live Bee node
+  (read-your-writes, network resolution, read-only pointer, end-to-end
+  `RecordStore` reopen); skips unless `BEE_API` is set and `swarm-bee` is
+  installed.
 - `tests/test_boundaries.py` — enforces that module-level imports stay
   stdlib-only.
 

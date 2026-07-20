@@ -32,6 +32,7 @@ from __future__ import annotations
 import json
 import hashlib
 import os
+import time
 from typing import Dict, Iterator, Optional, Protocol, Tuple
 
 Ref = str  # hex-encoded reference to a stored blob
@@ -334,55 +335,153 @@ class FilePointer:
 
 
 class SwarmFeedPointer:
-    """Placeholder for the Swarm feed backend.
+    """Mutable "latest root" backed by a Swarm feed.
 
-    A feed update is a signed single-owner chunk: the update must be
-    BMT-hashed and secp256k1-signed with the feed owner's key client-side,
-    then posted to Bee's /soc/{owner}/{id} endpoint; lookups go through
-    GET /feeds/{owner}/{topic}. Doing this properly needs an Ethereum
-    signing dependency, so it is deliberately out of scope for this
-    stdlib-only first cut. The interface is the contract; swapping this in
-    changes nothing above it.
+    A Swarm feed is an owner-signed, mutable pointer: each update is a
+    single-owner chunk (SOC), BMT-hashed and secp256k1-signed with the feed
+    owner's key, posted to Bee's ``/soc/{owner}/{id}`` endpoint; readers
+    resolve "the latest" by sequence-index lookup at
+    ``GET /feeds/{owner}/{topic}``. This maps a feed onto the `Pointer`
+    protocol: ``set(root)`` publishes a new signed update, ``get()`` resolves
+    the latest root.
 
-    Implementation plan (when built):
-    - Depend on the ``swarm-bee`` package behind a ``recordstore[feeds]``
-      extra, not this core. It does the SOC/secp256k1 signing correctly
-      (independently verified against a live Bee 2.8.1 node, 2026-07),
-      via ``feeds.update_feed_with_reference`` (set) and ``fetch_latest``
-      (get). This keeps the core stdlib-only.
-    - ``get()`` MUST NOT trust a single feed lookup. On a light node —
-      especially over a high-latency link — Bee's feed lookup is unreliable
-      per call, in two modes: it returns 404 ("lookup at failed"; ~10/12
-      calls in one hotspot measurement) or a *stale early* index instead of
-      the latest (see ethersphere/bee#5251). The underlying SOC chunks
-      push-sync and are individually retrievable fine (``/chunks`` and
-      ``/stewardship`` → 200); it is the *lookup* (which must fetch
-      candidate index chunks from the network) that flakes. So ``get()``
-      needs retry-until-stable (~15-20 tries with backoff) plus
-      read-your-writes caching: after ``set(ref)``, serve ``ref`` from a
-      local cache and never round-trip the network for our own write.
-    - Pass the cached last-known index to Bee as the ``after`` query hint
-      (``GET /feeds/{owner}/{topic}?after=N``) so the lookup starts from
-      there instead of probing from scratch — this is what makes retries
-      cheap and reliable. swarm-bee's ``fetch_latest`` does NOT currently
-      send this hint (probes from scratch every call), so either extend it
-      or call the endpoint with the param directly; a candidate upstream
-      contribution too. This turns the read-your-writes cache into a lookup
-      accelerator, not just a correctness shim.
-    - swarmfs already solves this exact Swarm property (``feed_ttl`` +
-      immediate self-refresh on own commits, polling for others'); use its
-      ``bzzf://`` feed layer as the reference implementation rather than
-      reinventing the policy.
-    This is a Swarm/light-node characteristic, not a swarm-bee defect — any
-    client hits it identically. See the bee-client repo's evaluation for
-    the full measurement.
+    Requires the ``swarm-bee`` package (``pip install "recordstore[feeds]"``),
+    which performs the SOC/secp256k1 signing correctly — independently verified
+    against a live Bee 2.8.1 node (2026-07). It is imported lazily, so the
+    recordstore core stays stdlib-only.
+
+    Reliability. Swarm feed *lookups* are unreliable per call on a light node,
+    especially over a high-latency link: a lookup can 404 ("lookup failed";
+    ~10/12 calls in one hotspot measurement) or return a *stale-early* index
+    instead of the latest (ethersphere/bee#5251). The SOC *writes* are fine and
+    the chunks are individually retrievable; it is the lookup — which fetches
+    candidate index chunks from the network — that flakes. So this class never
+    trusts a single lookup:
+
+    - **Read-your-writes cache.** After ``set(ref)``, ``ref`` is served from a
+      local cache for ``feed_ttl`` seconds with no network round-trip, so a
+      writer never waits on a flaky lookup to see its own commit.
+    - **Monotonic index floor.** The next write index is
+      ``max(network_next, local_floor)``. Without the floor, back-to-back
+      commits would reuse an index while the first SOC is still propagating,
+      and the second update would be silently dropped.
+    - **Retry-until-stable reads.** A cold or TTL-expired ``get()`` retries the
+      lookup with exponential backoff, ignoring transient 404s, and never
+      adopts a result whose index regresses below what it has already seen
+      (the stale-early guard).
+
+    This policy follows swarmfs's ``bzzf://`` feed layer, the reference
+    implementation for this Swarm characteristic. The ``after`` index hint that
+    would let Bee resume a lookup from a known index (and make retries cheap)
+    is *not* wired here: swarm-bee's typed feed API does not expose it. Adding
+    it would need the private transport or an upstream change; the retry loop
+    plus the index floor give correctness without it. This is a Swarm/light-node
+    characteristic, not a swarm-bee defect — any client hits it identically.
+
+    Construction. Pass a ``signer`` (32-byte secp256k1 private key, hex) to read
+    *and* write; the owner address is derived from it. For a read-only pointer,
+    pass ``owner`` (20-byte address, hex) instead. Writing also needs
+    ``postage_batch_id``. ``topic`` is a namespace string, hashed to the 32-byte
+    feed topic.
     """
 
-    def __init__(self, *_, **__):
-        raise NotImplementedError(
-            "Swarm feed pointer requires client-side SOC signing; "
-            "see class docstring. Use FilePointer/MemoryPointer meanwhile."
+    def __init__(
+        self,
+        api_url: str,
+        topic: str,
+        *,
+        signer: Optional[str] = None,
+        owner: Optional[str] = None,
+        postage_batch_id: Optional[str] = None,
+        feed_ttl: float = 15.0,
+        max_lookup_retries: int = 15,
+        retry_backoff: float = 0.5,
+        retry_backoff_cap: float = 5.0,
+    ):
+        try:
+            from bee import Bee
+            from bee.swarm.keys import PrivateKey
+            from bee.swarm.typed_bytes import BatchId, EthAddress, Reference, Topic
+            from bee.swarm.errors import BeeResponseError
+        except ImportError as e:  # pragma: no cover - only without the extra
+            raise ImportError(
+                "SwarmFeedPointer requires the 'swarm-bee' package; install it "
+                'with: pip install "recordstore[feeds]"'
+            ) from e
+
+        self._Reference = Reference
+        self._BeeResponseError = BeeResponseError
+        self._bee = Bee(api_url)
+        self._topic = Topic.from_string(topic)
+
+        self._signer = PrivateKey.from_hex(signer) if signer else None
+        if self._signer is not None:
+            self._owner = self._signer.public_key().address()
+        elif owner is not None:
+            self._owner = EthAddress.from_hex(owner)
+        else:
+            raise ValueError(
+                "SwarmFeedPointer needs a signer (to read and write) or an "
+                "owner address (read-only)"
+            )
+        self._batch = BatchId.from_hex(postage_batch_id) if postage_batch_id else None
+
+        self._ttl = feed_ttl
+        self._max_retries = max(1, max_lookup_retries)
+        self._backoff = retry_backoff
+        self._backoff_cap = retry_backoff_cap
+
+        # read-your-writes cache + monotonic index floor
+        self._cached_ref: Optional[Ref] = None
+        self._next_index = 0
+        self._cache_expiry = 0.0
+
+    def set(self, root: Ref) -> None:
+        if self._signer is None or self._batch is None:
+            raise RuntimeError(
+                "SwarmFeedPointer.set requires both a signer and a "
+                "postage_batch_id"
+            )
+        # max(network, local floor): respect another writer who advanced the
+        # feed, but never reuse an index whose SOC has not propagated yet.
+        network_next = self._bee.feeds.find_next_index(self._owner, self._topic)
+        index = max(network_next, self._next_index)
+        self._bee.feeds.update_feed_with_reference(
+            batch_id=self._batch,
+            signer=self._signer,
+            topic=self._topic,
+            reference=self._Reference.from_hex(root),
+            index=index,
         )
+        self._cached_ref = root
+        self._next_index = index + 1
+        self._cache_expiry = time.monotonic() + self._ttl
+
+    def get(self) -> Optional[Ref]:
+        if self._cached_ref is not None and time.monotonic() < self._cache_expiry:
+            return self._cached_ref  # read-your-writes / fresh cache
+
+        delay = self._backoff
+        for attempt in range(self._max_retries):
+            try:
+                update = self._bee.feeds.fetch_latest(self._owner, self._topic)
+            except self._BeeResponseError as e:
+                if getattr(e, "status", None) not in (404, 500):
+                    raise
+                # transient flake or empty feed; fall through to backoff/retry.
+            else:
+                # payload is timestamp(8 BE) || reference; strip the timestamp.
+                ref = update.payload[8:].hex()
+                if update.index_next >= self._next_index:
+                    self._cached_ref = ref
+                    self._next_index = update.index_next
+                    self._cache_expiry = time.monotonic() + self._ttl
+                    return ref
+                # stale-early: a fresher update exists; retry for it.
+            if attempt < self._max_retries - 1:
+                time.sleep(delay)
+                delay = min(delay * 2, self._backoff_cap)
+        return self._cached_ref  # last-known ref, or None if never resolved
 
 
 # ---------------------------------------------------------------------------

@@ -48,14 +48,18 @@ and nothing more:
 ## Install
 
 ```bash
-pip install "recordstore @ git+https://github.com/petfold/recordstore.git@v0.3.0"
+pip install "recordstore @ git+https://github.com/petfold/recordstore.git@v0.4.0"
 
-# with the Bee (Swarm) backend's HTTP dependency:
-pip install "recordstore[bee] @ git+https://github.com/petfold/recordstore.git@v0.3.0"
+# with the Bee (Swarm) bytes backend's HTTP dependency:
+pip install "recordstore[bee] @ git+https://github.com/petfold/recordstore.git@v0.4.0"
+
+# with the Swarm feed pointer (adds swarm-bee for SOC/secp256k1 signing):
+pip install "recordstore[feeds] @ git+https://github.com/petfold/recordstore.git@v0.4.0"
 ```
 
-Python ≥ 3.9. The core imports only the standard library; `requests` is
-needed (and imported lazily) only by `BeeBytesStore`.
+Python ≥ 3.9. The core imports only the standard library; both extra
+dependencies are imported lazily — `requests` only by `BeeBytesStore`
+(`[bee]`), `swarm-bee` only by `SwarmFeedPointer` (`[feeds]`).
 
 ## The pieces
 
@@ -64,7 +68,7 @@ needed (and imported lazily) only by `BeeBytesStore`.
 | `BytesStore` | `put(bytes) → ref`, `get(ref) → bytes` | `MemoryBytesStore` (in-memory, testing), `BeeBytesStore` (Swarm Bee node over `/bytes` — the blob endpoint, not the raw `/chunks/{address}` primitive) |
 | trie (internal) | canonical persistent radix trie mapping keys to value blobs | — |
 | `RecordStore` | staging, `commit() → root`, snapshots, sorted prefix iteration | — |
-| `Pointer` | mutable name for the latest root | `MemoryPointer`, `FilePointer` (atomic local file), `SwarmFeedPointer` (documented stub) |
+| `Pointer` | mutable name for the latest root | `MemoryPointer`, `FilePointer` (atomic local file), `SwarmFeedPointer` (owner-signed Swarm feed, over `swarm-bee`) |
 
 Nothing above `RecordStore` ever sees a stored blob or a trie node.
 
@@ -80,14 +84,18 @@ Nothing above `RecordStore` ever sees a stored blob or a trie node.
 python3 -m pytest tests/                                 # unit + fuzz + boundary tests
 
 BEE_API=http://<node>:1633 BEE_BATCH=<batchID> \
-    python3 -m pytest tests/test_recordstore_bee.py -v   # against a live Bee node
+    python3 -m pytest tests/test_recordstore_bee.py -v   # bytes backend, live node
+
+pip install "recordstore[feeds]"                         # needs swarm-bee
+BEE_API=http://<node>:1633 BEE_BATCH=<batchID> \
+    python3 -m pytest tests/test_recordstore_feed.py -v  # feed pointer, live node
 ```
 
 The fuzz suite runs randomized put/delete histories against a plain-dict
 oracle and asserts the canonical-root property throughout. The Bee
-integration tests skip automatically unless `BEE_API` is set; against a
-real (non-dev) node always provide `BEE_BATCH` with a purchased postage
-batch id.
+integration tests skip automatically unless `BEE_API` is set (the feed test
+also needs `swarm-bee` installed); against a real (non-dev) node always
+provide `BEE_BATCH` with a purchased postage batch id.
 
 ## Background
 
@@ -106,7 +114,7 @@ for the full comparison.
 Extracted from [petfold/ontodag](https://github.com/petfold/ontodag)
 (July 2026) with history preserved; validated against a live Bee 2.8.1
 light node on Gnosis mainnet (roundtrips, canonical roots on real BMT
-references, network retrievability). Known gaps — single-writer only (no
-concurrency control), `SwarmFeedPointer` not yet implemented, one blob
-per record — are detailed in the
+references, network retrievability). `SwarmFeedPointer` (owner-signed Swarm
+feed, over `swarm-bee`) landed in v0.4.0. Known gaps — single-writer only
+(no concurrency control), one blob per record — are detailed in the
 [user guide](docs/USER_GUIDE.md#limitations-and-roadmap).

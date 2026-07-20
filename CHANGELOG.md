@@ -4,6 +4,24 @@ All notable changes to this project are documented here. The format is based on
 [Keep a Changelog](https://keepachangelog.com/), and this project adheres to
 [Semantic Versioning](https://semver.org/).
 
+## [0.4.0] — 2026-07-20
+
+### Added
+
+- **`SwarmFeedPointer`** — the `Pointer` "latest root" backed by an owner-signed
+  Swarm feed (previously a stub that raised `NotImplementedError`). `set(root)`
+  publishes a signed single-owner chunk; `get()` resolves the latest via a feed
+  lookup. Built on the `swarm-bee` package for BMT/secp256k1 signing, behind a
+  new `recordstore[feeds]` extra and imported lazily so the core stays
+  stdlib-only. Because Swarm feed lookups are unreliable per call on a light
+  node, it uses a read-your-writes cache, a monotonic write-index floor, and
+  retry-until-stable reads with a stale-early guard (policy follows swarmfs's
+  `bzzf://` layer). Constructor exposes `feed_ttl` / `max_lookup_retries` /
+  `retry_backoff` knobs. Accepts a `signer` (read+write) or an `owner`
+  (read-only).
+- `tests/test_recordstore_feed.py` — env-gated live-node integration test for
+  the feed pointer (skips unless `BEE_API` is set and `swarm-bee` is installed).
+
 ## [0.3.0] — 2026-07-20
 
 ### Changed
