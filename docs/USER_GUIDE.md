@@ -252,6 +252,15 @@ reader following the pointer sees all of a commit or none of it.
 Deleting a key that was staged-but-never-committed simply drops it;
 committing a delete of a key that never existed in the trie is a no-op.
 
+**Converging with concurrent writers.** `commit(reconcile=True, resolver=None,
+retries=5)` (with a pointer attached) merges instead of overwriting when the
+pointer moved under you — see §5 for the mechanism, the resolver, and the
+in-process-vs-networked guarantees. Plain `commit()` is last-write-wins.
+
+**Merging versions directly.** `RecordStore.merge(bytes_store, base, ours,
+theirs, resolver=None) → root` three-way merges two divergent roots and is the
+primitive `reconcile` builds on; full semantics and examples in §5.
+
 ### Error summary
 
 | Situation | Raised |
@@ -262,6 +271,8 @@ committing a delete of a key that never existed in the trie is a no-op.
 | `NaN` / `Infinity` in a value | `ValueError` |
 | write on a read-only snapshot | `TypeError` |
 | blob missing from the bytes store | `KeyError` (from the backend) |
+| unresolved merge conflict (no `resolver`) | `MergeConflict` (`.conflicts`) |
+| `reconcile` cannot land after `retries` | `RuntimeError` |
 
 ---
 
@@ -283,7 +294,7 @@ be a stable hex string determined by the content.
 A dict keyed by SHA-256. Use it for tests and ephemeral work; `len(store)`
 gives the blob count. Data lives only as long as the object.
 
-### `BeeBytesStore(api_url, postage_batch_id, deferred_upload=True)`
+### `BeeBytesStore(api_url, postage_batch_id, deferred_upload=True, max_concurrent_reads=16)`
 
 A real [Swarm Bee](https://docs.ethswarm.org/) node over its HTTP API
 (`POST`/`GET /bytes`) — named for that endpoint specifically: `/bytes` is
@@ -303,6 +314,13 @@ references. Requirements and behavior:
   `GET /stewardship/{ref}` if you need the guarantee.
 - Values larger than one 4 KB chunk are handled transparently by Bee's
   splitter — any payload yields exactly one reference.
+- **Concurrent I/O.** It keeps one pooled, keep-alive HTTP session (no
+  handshake per op) and implements `get_many`/`put_many`, which recordstore
+  uses to parallelise reads (`items()`, prefix scans) and a commit's value
+  writes. `max_concurrent_reads` (default 16) caps in-flight requests and sizes
+  the connection pool; raise it on a high-latency link, lower it to be gentle
+  on a shared node. It bounds concurrency — a huge `get_many` never opens more
+  than this many sockets at once.
 - HTTP timeouts are 120 s; a 404 surfaces as `KeyError`, other HTTP errors
   as `requests.HTTPError`.
 
@@ -335,6 +353,10 @@ class Pointer(Protocol):
     def set(self, root: str) -> None: ...
 ```
 
+A pointer may also implement `compare_and_set(expected, new) -> bool`;
+`commit(reconcile=True)` (§5) uses it for race-free updates and falls back to a
+best-effort read-then-set when it is absent.
+
 Attach one at construction and it is read at open and advanced on every
 commit:
 
@@ -347,7 +369,8 @@ store.put("k", 1)
 store.commit()                                  # pointer now names the new root
 ```
 
-- **`MemoryPointer(root=None)`** — in-process only.
+- **`MemoryPointer(root=None)`** — in-process only; implements an atomic
+  `compare_and_set`, so `commit(reconcile=True)` is race-free in-process.
 - **`FilePointer(path)`** — one root in a local file; `set` writes a temp
   file and `os.replace`s it, which is atomic on POSIX, so a crash never
   leaves a torn pointer. A missing file reads as `None`.

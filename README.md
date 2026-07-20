@@ -20,6 +20,20 @@ list(store.keys("users/"))     # ['users/alice', 'users/bob']
 snapshot = RecordStore.at(root, blobs)   # frozen view of that version
 ```
 
+Concurrent writers converge without a lock server — if the shared pointer
+moved under a commit, it three-way merges and retries:
+
+```python
+from recordstore import MemoryPointer
+
+pointer = MemoryPointer(root)                  # a shared "latest version" name
+a = RecordStore(blobs, pointer=pointer)        # two writers open the same version
+b = RecordStore(blobs, pointer=pointer)
+a.put("users/carol", {"name": "Carol"}); a.commit(reconcile=True)
+b.put("users/dave",  {"name": "Dave"});  b.commit(reconcile=True)   # folds in a's change
+# the pointer now names a version containing both carol and dave
+```
+
 ## Why
 
 Content-addressed stores give you immutable `put(bytes) → ref` /
@@ -41,12 +55,22 @@ and nothing more:
   with a string equality check, and cheap to diff.
 - **Three-way merge** — `RecordStore.merge(base, ours, theirs)` reconciles
   two divergent versions; canonicity makes unchanged subtrees merge for free
-  and equal edits conflict-free, with conflicts raised (or settled by a
-  resolver). The building block for multi-writer use.
+  and equal edits conflict-free, with conflicts raised or settled by a
+  `resolver(key, base, ours, theirs)` you supply. The diff is O(divergence),
+  not O(dataset).
+- **Multi-writer, no lock server** — `commit(reconcile=True)` makes concurrent
+  writers converge: if the pointer moved under you it three-way merges and
+  retries instead of overwriting. Race-free in-process; best-effort across
+  processes over a Swarm feed. A commutative resolver keeps 3+ writers
+  order-independent.
 - **Structural sharing** — versions are stored as a persistent
   (copy-on-write) compacted radix trie; a commit writes only the blobs
   along the changed paths, and unchanged subtrees are shared between
   versions.
+- **Concurrent I/O** — `items()` (bulk read), `get_many`/`put_many`, and a
+  pooled keep-alive HTTP session let `BeeBytesStore` parallelise round trips
+  instead of paying one per record — the difference between usable and not on
+  a high-latency link.
 
 ## Install
 
@@ -70,7 +94,7 @@ dependencies are imported lazily — `requests` only by `BeeBytesStore`
 |---|---|---|
 | `BytesStore` | `put(bytes) → ref`, `get(ref) → bytes` | `MemoryBytesStore` (in-memory, testing), `BeeBytesStore` (Swarm Bee node over `/bytes` — the blob endpoint, not the raw `/chunks/{address}` primitive) |
 | trie (internal) | canonical persistent radix trie mapping keys to value blobs | — |
-| `RecordStore` | staging, `commit() → root`, snapshots, sorted prefix iteration | — |
+| `RecordStore` | staging, `commit()` / `commit(reconcile=True)`, snapshots, sorted `keys()`/`items()`, three-way `merge()` | — |
 | `Pointer` | mutable name for the latest root | `MemoryPointer`, `FilePointer` (atomic local file), `SwarmFeedPointer` (owner-signed Swarm feed, over `swarm-bee`) |
 
 Nothing above `RecordStore` ever sees a stored blob or a trie node.
