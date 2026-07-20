@@ -355,6 +355,99 @@ class _Trie:
             key = key[1:]
         return None
 
+    # -- diff (structural, prunes shared subtrees) --------------------------
+
+    def _node_or_none(self, ref: Optional[Ref]) -> Optional[_Node]:
+        return self._load(ref) if ref is not None else None
+
+    def _node_items(self, node: _Node, acc: bytes):
+        """(key, value_ref) for every value in the subtree rooted at `node`
+        (which may be synthetic, i.e. not itself stored)."""
+        stack = [(node, acc)]
+        while stack:
+            n, a = stack.pop()
+            full = a + n.prefix
+            if n.value_ref is not None:
+                yield (full, n.value_ref)
+            for byte, cref in n.children.items():
+                stack.append((self._load(cref), full + bytes([byte])))
+
+    def _diff(self, a_root: Optional[Ref], b_root: Optional[Ref]):
+        """Yield (key, a_value_ref|None, b_value_ref|None) for every key where
+        `a_root` and `b_root` differ. Subtrees with equal refs are pruned, so
+        the cost is proportional to the difference, not the dataset."""
+        if a_root == b_root:
+            return
+        yield from self._diff_nodes(
+            self._node_or_none(a_root), self._node_or_none(b_root), b"")
+
+    def _diff_nodes(self, a: Optional[_Node], b: Optional[_Node], acc: bytes):
+        if a is None:
+            if b is not None:
+                for k, v in self._node_items(b, acc):
+                    yield (k, None, v)
+            return
+        if b is None:
+            for k, v in self._node_items(a, acc):
+                yield (k, v, None)
+            return
+
+        pa, pb = a.prefix, b.prefix
+        if pa == pb:
+            ka = acc + pa
+            if a.value_ref != b.value_ref:
+                yield (ka, a.value_ref, b.value_ref)
+            for byte in set(a.children) | set(b.children):
+                ca, cb = a.children.get(byte), b.children.get(byte)
+                if ca == cb:
+                    continue  # shared subtree
+                yield from self._diff_nodes(
+                    self._node_or_none(ca), self._node_or_none(cb),
+                    ka + bytes([byte]))
+            return
+
+        common = _common_prefix(pa, pb)
+        if len(common) < len(pa) and len(common) < len(pb):
+            # prefixes diverge => the two subtrees cover disjoint keys
+            for k, v in self._node_items(a, acc):
+                yield (k, v, None)
+            for k, v in self._node_items(b, acc):
+                yield (k, None, v)
+        elif len(common) == len(pa):
+            # a's key is a proper prefix of b's: b lives under one of a's branches
+            ka = acc + pa
+            bb = pb[len(pa)]
+            b_split = _Node(pb[len(pa) + 1:], b.value_ref, b.children)
+            if a.value_ref is not None:
+                yield (ka, a.value_ref, None)  # no key at ka on b's side
+            for byte, cref in a.children.items():
+                if byte == bb:
+                    yield from self._diff_nodes(
+                        self._load(cref), b_split, ka + bytes([byte]))
+                else:
+                    for k, v in self._node_items(self._load(cref), ka + bytes([byte])):
+                        yield (k, v, None)
+            if bb not in a.children:
+                for k, v in self._node_items(b_split, ka + bytes([bb])):
+                    yield (k, None, v)
+        else:
+            # symmetric: b's key is a proper prefix of a's
+            kb = acc + pb
+            ab = pa[len(pb)]
+            a_split = _Node(pa[len(pb) + 1:], a.value_ref, a.children)
+            if b.value_ref is not None:
+                yield (kb, None, b.value_ref)
+            for byte, cref in b.children.items():
+                if byte == ab:
+                    yield from self._diff_nodes(
+                        a_split, self._load(cref), kb + bytes([byte]))
+                else:
+                    for k, v in self._node_items(self._load(cref), kb + bytes([byte])):
+                        yield (k, None, v)
+            if ab not in b.children:
+                for k, v in self._node_items(a_split, kb + bytes([ab])):
+                    yield (k, v, None)
+
     def insert(self, root: Optional[Ref], key: bytes, value_ref: Ref) -> Ref:
         if root is None:
             return self._store(_Node(key, value_ref, {}))
@@ -468,6 +561,14 @@ class MemoryPointer:
 
     def set(self, root: Ref) -> None:
         self._root = root
+
+    def compare_and_set(self, expected: Optional[Ref], new: Optional[Ref]) -> bool:
+        """Atomic in-process compare-and-set — lets reconciling commits over a
+        shared in-process pointer converge without a lost-update race."""
+        if self._root == expected:
+            self._root = new
+            return True
+        return False
 
 
 class FilePointer:
@@ -881,16 +982,10 @@ class RecordStore:
 
     # -- commit ---------------------------------------------------------------
 
-    def commit(self) -> Optional[Ref]:
-        """Flush staged changes; return the new root and update the pointer.
-
-        The root/pointer changes only after every blob write has succeeded,
-        so a reader following the pointer sees all of a commit or none of it.
-        """
-        if self._readonly:
-            raise TypeError("read-only snapshot")
-        # 1. Value blobs are independent — write them all up front, concurrently
-        #    if the store supports it, instead of one serial round trip each.
+    def _build_root(self, base: Optional[Ref]) -> Optional[Ref]:
+        """Apply the staged changes on top of `base` and return the new root.
+        Value blobs go up front (concurrently if supported); trie nodes are
+        buffered and flushed bottom-up, one batch per level."""
         writes = [(k, self._staged[k]) for k in sorted(self._staged)
                   if self._staged[k] is not _TOMBSTONE]
         put_many = getattr(self._blobs, "put_many", None)
@@ -898,13 +993,9 @@ class RecordStore:
         refs = put_many(datas) if put_many is not None else [self._blobs.put(d) for d in datas]
         vref = {k: r for (k, _), r in zip(writes, refs)}
 
-        # 2. Build the new trie with node writes buffered, then flush only the
-        #    surviving nodes bottom-up, one concurrent batch per level. (Node
-        #    writes must stay bottom-up: a parent's ref is the backend-assigned
-        #    hash of its children, so children come first.)
         self._trie._buffering = True
         try:
-            root = self._root
+            root = base
             for key in sorted(self._staged):  # deterministic write order
                 staged = self._staged[key]
                 kb = key.encode("utf-8")
@@ -915,15 +1006,55 @@ class RecordStore:
                         pass  # deleted a key that never existed in the trie
                 else:
                     root = self._trie.insert(root, kb, vref[key])
-            root = self._trie._flush(root)
+            return self._trie._flush(root)
         finally:
             self._trie._reset_buffer()
 
+    def commit(self, *, reconcile: bool = False, resolver=None,
+               retries: int = 5) -> Optional[Ref]:
+        """Flush staged changes; return the new root and update the pointer.
+
+        The root/pointer changes only after every blob write has succeeded, so
+        a reader following the pointer sees all of a commit or none of it.
+
+        With `reconcile=True` and a pointer attached, the commit converges with
+        concurrent writers instead of overwriting them: if the pointer has moved
+        past the root this commit built on, the two versions are three-way
+        merged (see `merge`; `resolver` settles conflicts) and the merge is
+        retried up to `retries` times until the pointer lands. A pointer that
+        exposes `compare_and_set` gets race-free updates; otherwise the
+        read-then-set is best-effort (there is no lower-level CAS)."""
+        if self._readonly:
+            raise TypeError("read-only snapshot")
+        base = self._root
+        new = self._build_root(base)
+        if self._pointer is not None:
+            if reconcile:
+                new = self._reconcile(base, new, resolver, retries)
+            else:
+                self._pointer.set(new)
         self._staged.clear()
-        self._root = root
-        if self._pointer is not None and root is not None:
-            self._pointer.set(root)
-        return root
+        self._root = new
+        return new
+
+    def _reconcile(self, base, new, resolver, retries):
+        pointer = self._pointer
+        cas = getattr(pointer, "compare_and_set", None)
+        expected = base
+        for _ in range(max(1, retries)):
+            current = pointer.get()
+            if current == expected:
+                if cas is None:
+                    pointer.set(new)  # best-effort (no CAS at this layer)
+                    return new
+                if cas(expected, new):
+                    return new
+                continue  # lost the race; re-read and retry
+            # pointer advanced under us: fold their version into ours
+            new = self.merge(self._blobs, expected, new, current, resolver)
+            expected = current
+        raise RuntimeError(
+            f"commit could not reconcile the pointer after {retries} tries")
 
     # -- merge ----------------------------------------------------------------
 
@@ -945,10 +1076,10 @@ class RecordStore:
         `MergeConflict`. The merge is commutative iff the resolver is symmetric
         in its ours/theirs arguments (the built-in conflict = raise is).
 
-        Only the merged diff is written (applied to `base`, bulk-flushed), so
-        unchanged subtrees are shared with `base`. Reading the diff currently
-        scans the three roots in full; skipping equal subtrees during the scan
-        is a future optimisation.
+        Only the changed keys are touched: both the read (a structural diff that
+        prunes subtrees equal on both sides) and the write (the merged diff
+        applied to `base`, bulk-flushed) are proportional to the divergence, not
+        the dataset. Unchanged subtrees are shared with `base`.
         """
         if ours == theirs:
             return ours                       # identical (incl. both None)
@@ -958,34 +1089,31 @@ class RecordStore:
             return ours                       # only we changed
 
         trie = _Trie(bytes_store)
-        base_items = {k: r for k, r in trie.items(base)}
-        our_items = {k: r for k, r in trie.items(ours)}
-        their_items = {k: r for k, r in trie.items(theirs)}
+        # (base_ref, side_ref) per key that changed from base on each side.
+        our_diff = {k: (bv, sv) for k, bv, sv in trie._diff(base, ours)}
+        their_diff = {k: (bv, sv) for k, bv, sv in trie._diff(base, theirs)}
 
         changes: Dict[bytes, object] = {}     # key -> value_ref | _TOMBSTONE
         conflicts: List[str] = []
-        for k in set(base_items) | set(our_items) | set(their_items):
-            b = base_items.get(k)
-            o = our_items.get(k)
-            t = their_items.get(k)
-            if o == t:
-                merged = o                    # same on both sides
-            elif o == b:
-                merged = t                    # unchanged by us -> take theirs
-            elif t == b:
-                merged = o                    # unchanged by them -> take ours
-            elif resolver is None:
-                conflicts.append(k.decode("utf-8"))
-                continue
-            else:
-                decode = (lambda r: _decode_value(bytes_store.get(r))
-                          if r is not None else ABSENT)
-                res = resolver(k.decode("utf-8"), decode(b), decode(o), decode(t))
-                if res is DELETE:
-                    merged = None
+        for k in set(our_diff) | set(their_diff):
+            if k in our_diff and k in their_diff:
+                bv, ov = our_diff[k]
+                tv = their_diff[k][1]
+                if ov == tv:
+                    merged = ov               # both changed it the same way
+                elif resolver is None:
+                    conflicts.append(k.decode("utf-8"))
+                    continue
                 else:
-                    merged = bytes_store.put(_encode_value(res))
-            if merged != b:
+                    decode = (lambda r: _decode_value(bytes_store.get(r))
+                              if r is not None else ABSENT)
+                    res = resolver(k.decode("utf-8"), decode(bv), decode(ov), decode(tv))
+                    merged = None if res is DELETE else bytes_store.put(_encode_value(res))
+            elif k in our_diff:
+                bv, merged = our_diff[k]       # changed by us only
+            else:
+                bv, merged = their_diff[k]     # changed by them only
+            if merged != bv:                   # (a resolver could land back on base)
                 changes[k] = merged if merged is not None else _TOMBSTONE
 
         if conflicts:

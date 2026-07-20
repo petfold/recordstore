@@ -421,13 +421,27 @@ def resolver(key, base, ours, theirs):   # each is the value or ABSENT
 merged = RecordStore.merge(blobs, base, ours, theirs, resolver=resolver)
 ```
 
-The merge is efficient by canonicity: unchanged subtrees have equal refs on
-both sides and merge for free, and only the merged diff is written (shared
-with `base`). It is commutative when the resolver is symmetric in its
-ours/theirs arguments (the built-in raise-on-conflict is). This is the
-primitive for multi-writer reconciliation over a `SwarmFeedPointer`: on
-detecting the feed advanced past your last root, merge your root with the
-feed's against the base you both branched from, then commit the result.
+The merge is efficient by canonicity: both the read (a structural diff that
+prunes subtrees equal on both sides) and the write (only the merged diff,
+applied to `base`) are proportional to the divergence, not the dataset. It is
+commutative when the resolver is symmetric in its ours/theirs arguments (the
+built-in raise-on-conflict is).
+
+**Automatic reconciliation.** With a pointer attached you rarely call `merge`
+by hand — pass `reconcile=True` to `commit`, and it converges with concurrent
+writers instead of overwriting them:
+
+```python
+store = RecordStore(blobs, pointer=pointer)   # opens at the pointer's root
+store.put("users/alice", {...})
+store.commit(reconcile=True, resolver=resolver)   # merges if the pointer moved
+```
+
+If the pointer still points where this store branched from, the commit lands
+directly; if another writer advanced it, `commit` three-way merges the two and
+retries (up to `retries=`) until it lands. A pointer exposing
+`compare_and_set` (e.g. `MemoryPointer`) gets race-free updates; `FilePointer`
+/ `SwarmFeedPointer` fall back to a best-effort read-then-set.
 
 **Idempotent writers.** A writer that recomputes and re-puts the same
 records produces the same root — safe to re-run, and downstream consumers
@@ -467,15 +481,15 @@ comparing roots see “no change.”
 
 ## 7. Limitations and roadmap
 
-- **No automatic concurrency control.** Two `RecordStore` instances committing
-  over the same pointer still last-write-win *at the pointer level* — the
-  loser's commit drops off the "latest" chain (both roots remain readable). The
-  library does not detect this for you. What it now provides is the
-  reconciliation primitive: `RecordStore.merge(base, ours, theirs)` (§5) does a
-  canonical three-way merge, so an application that notices its pointer advanced
-  can merge and re-commit. Wiring that detect-merge-retry loop into
-  `SwarmFeedPointer` automatically (so concurrent writers converge without
-  application code) is the remaining step.
+- **Concurrency control needs an opt-in and a CAS-capable pointer.**
+  `commit(reconcile=True)` (§5) makes concurrent writers converge — it
+  three-way merges and retries when the pointer moved under it — and the plain
+  `commit()` still last-write-wins. Reconciliation is race-free only against a
+  pointer that implements `compare_and_set` (`MemoryPointer` does, so in-process
+  multi-writer is correct); `FilePointer` and `SwarmFeedPointer` fall back to a
+  best-effort read-then-set, which narrows but does not close the window between
+  two writers landing. A CAS for the feed pointer (write-at-expected-index) is
+  the remaining step for fully safe cross-process multi-writer.
 - **Swarm feed lookups are unreliable per call.** `SwarmFeedPointer`
   (implemented in v0.4.0, see §4) works around this — read-your-writes cache,
   monotonic write-index floor, and retry-until-stable reads with a stale-early

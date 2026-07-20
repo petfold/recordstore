@@ -4,6 +4,29 @@ All notable changes to this project are documented here. The format is based on
 [Keep a Changelog](https://keepachangelog.com/), and this project adheres to
 [Semantic Versioning](https://semver.org/).
 
+## [0.9.0] — 2026-07-20
+
+### Added
+
+- **`commit(reconcile=True, resolver=None, retries=5)`** — auto-reconciling
+  commit. With a pointer attached, if the pointer moved past the root this
+  commit built on, the two versions are three-way merged and the commit is
+  retried until it lands, so concurrent writers converge instead of clobbering
+  each other. Plain `commit()` is unchanged (last-write-wins).
+- **`MemoryPointer.compare_and_set(expected, new)`** — atomic in-process CAS;
+  `commit(reconcile=True)` uses it for race-free updates, and falls back to a
+  best-effort read-then-set for pointers without one.
+
+### Changed
+
+- **`RecordStore.merge` is now O(divergence), not O(dataset), on both sides.**
+  The read uses a structural trie diff that prunes subtrees with equal refs
+  (canonical roots make equal content share a ref), so merging a single-key
+  difference in a 1000-record store touched ~15 blobs instead of ~2000. The
+  write already applied only the diff. Behaviour is unchanged — validated by
+  new fuzz tests comparing the diff and the full merge to brute-force oracles
+  over hundreds of random cases.
+
 ## [0.8.0] — 2026-07-20
 
 ### Added

@@ -19,8 +19,11 @@ depends on:
 """
 
 import os
+import random
 import tempfile
 import unittest
+
+from recordstore.recordstore import _Trie, _decode_value
 
 from recordstore import (ABSENT, DELETE, FilePointer, MemoryBytesStore,
                          MergeConflict, MemoryPointer, RecordStore)
@@ -483,6 +486,144 @@ class TestMerge(unittest.TestCase):
         m = RecordStore.merge(self.store, None,
                               self._root({"a": 1}), self._root({"b": 2}))
         self.assertEqual(self._dict(m), {"a": 1, "b": 2})
+
+
+class TestReconcilingCommit(unittest.TestCase):
+    def _seed(self, mapping):
+        self.store = MemoryBytesStore()
+        self.ptr = MemoryPointer()
+        seed = RecordStore(self.store, pointer=self.ptr)
+        for k, v in mapping.items():
+            seed.put(k, v)
+        seed.commit()
+
+    def _final(self):
+        return dict(RecordStore(self.store, pointer=self.ptr).items())
+
+    def test_concurrent_writers_converge(self):
+        self._seed({"a": 1, "b": 2})
+        w1 = RecordStore(self.store, pointer=self.ptr)  # both open at the base
+        w2 = RecordStore(self.store, pointer=self.ptr)
+        w1.put("a", 10)
+        w2.put("b", 20)
+        w1.commit(reconcile=True)   # pointer unchanged -> lands directly
+        w2.commit(reconcile=True)   # pointer moved -> merges w1's change in
+        self.assertEqual(self._final(), {"a": 10, "b": 20})
+
+    def test_reconcile_conflict_raises(self):
+        self._seed({"a": 1})
+        w1 = RecordStore(self.store, pointer=self.ptr)
+        w2 = RecordStore(self.store, pointer=self.ptr)
+        w1.put("a", 2)
+        w2.put("a", 3)
+        w1.commit(reconcile=True)
+        with self.assertRaises(MergeConflict):
+            w2.commit(reconcile=True)
+
+    def test_reconcile_conflict_resolved(self):
+        self._seed({"a": 1})
+        w1 = RecordStore(self.store, pointer=self.ptr)
+        w2 = RecordStore(self.store, pointer=self.ptr)
+        w1.put("a", 2)
+        w2.put("a", 3)
+        w1.commit(reconcile=True)
+        w2.commit(reconcile=True, resolver=lambda k, b, o, t: max(o, t))
+        self.assertEqual(self._final(), {"a": 3})
+
+    def test_default_commit_is_last_write_wins(self):
+        self._seed({"a": 1, "b": 2})
+        w1 = RecordStore(self.store, pointer=self.ptr)
+        w2 = RecordStore(self.store, pointer=self.ptr)
+        w1.put("a", 10)
+        w2.put("b", 20)
+        w1.commit()   # no reconcile
+        w2.commit()   # overwrites: w1's change to a is lost from latest
+        self.assertEqual(self._final(), {"a": 1, "b": 20})
+
+    def test_reconcile_single_writer_unaffected(self):
+        self._seed({"a": 1})
+        w = RecordStore(self.store, pointer=self.ptr)
+        w.put("b", 2)
+        root = w.commit(reconcile=True)
+        self.assertEqual(self.ptr.get(), root)
+        self.assertEqual(self._final(), {"a": 1, "b": 2})
+
+
+class TestDiffMergeFuzz(unittest.TestCase):
+    """The radix diff powering merge is intricate (prefix splits); check it and
+    the whole merge against brute-force oracles over many random cases with
+    shared-prefix keys."""
+
+    def _build(self, store, mapping):
+        rs = RecordStore(store)
+        for k, v in mapping.items():
+            rs.put(k, v)
+        return rs.commit()
+
+    def _rand_map(self, rng, n):
+        return {"".join(rng.choice("abc") for _ in range(rng.randint(1, 5))):
+                rng.randint(0, 9) for _ in range(n)}
+
+    def test_diff_matches_bruteforce(self):
+        rng = random.Random(20260720)
+        for _ in range(400):
+            store = MemoryBytesStore()
+            am = self._rand_map(rng, rng.randint(0, 15))
+            bm = self._rand_map(rng, rng.randint(0, 15))
+            a, b = self._build(store, am), self._build(store, bm)
+            trie = _Trie(store)
+            got = {}
+            for k, av, bv in trie._diff(a, b):
+                got[k.decode()] = (
+                    _decode_value(store.get(av)) if av is not None else None,
+                    _decode_value(store.get(bv)) if bv is not None else None)
+            expected = {k: (am.get(k), bm.get(k))
+                        for k in set(am) | set(bm) if am.get(k) != bm.get(k)}
+            self.assertEqual(got, expected)
+
+    def test_merge_matches_bruteforce(self):
+        rng = random.Random(11111)
+
+        def mutate(base):
+            m = dict(base)
+            for _ in range(rng.randint(0, 6)):
+                k = "".join(rng.choice("abc") for _ in range(rng.randint(1, 4)))
+                if rng.random() < 0.7:
+                    m[k] = rng.randint(0, 99)
+                else:
+                    m.pop(k, None)
+            return m
+
+        def resolver(k, b, o, t):  # symmetric, deterministic; never DELETE
+            return max(x for x in (o, t) if x is not ABSENT)
+
+        def oracle(base, ours, theirs):
+            out = {}
+            for k in set(base) | set(ours) | set(theirs):
+                b = base.get(k, ABSENT)
+                o = ours.get(k, ABSENT)
+                t = theirs.get(k, ABSENT)
+                if o == t:
+                    v = o
+                elif o == b:
+                    v = t
+                elif t == b:
+                    v = o
+                else:
+                    v = resolver(k, b, o, t)
+                if v is not ABSENT:
+                    out[k] = v
+            return out
+
+        for _ in range(400):
+            store = MemoryBytesStore()
+            base = self._rand_map(rng, rng.randint(0, 12))
+            ours, theirs = mutate(base), mutate(base)
+            m = RecordStore.merge(store, self._build(store, base),
+                                  self._build(store, ours),
+                                  self._build(store, theirs), resolver=resolver)
+            self.assertEqual(dict(RecordStore.at(m, store).items()),
+                             oracle(base, ours, theirs))
 
 
 if __name__ == "__main__":
