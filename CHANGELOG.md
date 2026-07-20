@@ -4,6 +4,19 @@ All notable changes to this project are documented here. The format is based on
 [Keep a Changelog](https://keepachangelog.com/), and this project adheres to
 [Semantic Versioning](https://semver.org/).
 
+## [0.4.1] — 2026-07-20
+
+### Changed
+
+- `SwarmFeedPointer.get()` now passes Bee's `after` index hint
+  (`GET /feeds/{owner}/{topic}?after=N`) once it has a confirmed index to
+  resume from, so the lookup starts just below the tip instead of probing from
+  scratch — cheaper and markedly less flaky as a feed grows (verified live on
+  Bee 2.8.1: `?after=N` resolves where the plain lookup 404s). swarm-bee's typed
+  API does not expose `after` (see bee-py#2), so it is sent through the client
+  transport, falling back to the plain lookup when the transport is unavailable
+  or the feed has no confirmed index yet (cold reads). No API change.
+
 ## [0.4.0] — 2026-07-20
 
 ### Added

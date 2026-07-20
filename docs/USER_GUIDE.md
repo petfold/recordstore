@@ -429,13 +429,15 @@ comparing roots see “no change.”
 - **Swarm feed lookups are unreliable per call.** `SwarmFeedPointer`
   (implemented in v0.4.0, see §4) works around this — read-your-writes cache,
   monotonic write-index floor, and retry-until-stable reads with a stale-early
-  guard, following swarmfs's `bzzf://` layer. Two rough edges remain: the
-  `after` index hint that would let Bee resume a lookup from a known index
-  (making retries cheap) is not wired, because `swarm-bee`'s typed feed API
-  does not expose it; and a never-written feed only resolves to `None` after
-  the retries exhaust, so opening a brand-new feed-backed store pays that
-  cost once. Full rationale and the measured flakiness are in the
-  `SwarmFeedPointer` docstring in `recordstore.py`.
+  guard, following swarmfs's `bzzf://` layer. As of v0.4.1 it also passes Bee's
+  `after` index hint once it has a confirmed index to resume from, so lookups
+  start near the tip; because `swarm-bee`'s typed API does not expose `after`
+  (see bee-py#2) this goes through the client transport, falling back to the
+  plain lookup for cold reads. Remaining rough edges: cold reads (no confirmed
+  index yet) still use the unhinted, flakier lookup; and a never-written feed
+  only resolves to `None` after the retries exhaust, so opening a brand-new
+  feed-backed store pays that cost once. Full rationale and the measured
+  flakiness are in the `SwarmFeedPointer` docstring in `recordstore.py`.
 - **No garbage collection.** Old versions' blobs are never deleted by this
   library. On Swarm, chunk lifetime is governed by postage stamps and the
   network's GC — content simply expires unless re-stamped or pinned; for

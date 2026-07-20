@@ -98,6 +98,18 @@ class TestSwarmFeedPointer(unittest.TestCase):
         p.set(second)  # index floor prevents reusing the first index
         self.assertEqual(self._pointer(topic).get(), second)
 
+    def test_after_hint_resolves_latest(self):
+        # feed_ttl=0 disables the read-your-writes cache, forcing get() onto the
+        # network path; after three writes the index floor is high enough that
+        # get() resolves via Bee's `after` hint rather than a plain lookup.
+        topic = self._unique_topic("afterhint")
+        p = self._pointer(topic, feed_ttl=0.0)
+        refs = [secrets.token_hex(32) for _ in range(3)]
+        for r in refs:
+            p.set(r)
+        self.assertTrue(p._can_hint)  # transport supports the hint here
+        self.assertEqual(p.get(), refs[-1])
+
     def test_empty_feed_reads_as_none(self):
         # Never-written feed: retries exhaust and get() reports None (empty),
         # which RecordStore treats as "start from the empty dataset".

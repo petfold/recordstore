@@ -371,11 +371,14 @@ class SwarmFeedPointer:
       (the stale-early guard).
 
     This policy follows swarmfs's ``bzzf://`` feed layer, the reference
-    implementation for this Swarm characteristic. The ``after`` index hint that
-    would let Bee resume a lookup from a known index (and make retries cheap)
-    is *not* wired here: swarm-bee's typed feed API does not expose it. Adding
-    it would need the private transport or an upstream change; the retry loop
-    plus the index floor give correctness without it. This is a Swarm/light-node
+    implementation for this Swarm characteristic. Once a feed has been resolved
+    at least once, ``get()`` also passes Bee's ``after`` index hint
+    (``GET /feeds/...?after=N``) so the lookup resumes just below the last
+    confirmed index instead of probing from scratch — much cheaper and less
+    flaky as the feed grows. swarm-bee's typed API does not expose ``after``
+    (see bee-py#2), so it is sent through the client transport directly, and
+    falls back to the plain lookup when that transport is unavailable or when
+    there is no confirmed index yet to resume from. This is a Swarm/light-node
     characteristic, not a swarm-bee defect — any client hits it identically.
 
     Construction. Pass a ``signer`` (32-byte secp256k1 private key, hex) to read
@@ -428,6 +431,11 @@ class SwarmFeedPointer:
             )
         self._batch = BatchId.from_hex(postage_batch_id) if postage_batch_id else None
 
+        # Bee honours GET /feeds/...?after=N (resume a lookup from a known
+        # index); swarm-bee's typed API can't pass it, so hint via the client
+        # transport when present (bee-py#2), falling back cleanly otherwise.
+        self._can_hint = hasattr(getattr(self._bee.feeds, "_inner", None), "send")
+
         self._ttl = feed_ttl
         self._max_retries = max(1, max_lookup_retries)
         self._backoff = retry_backoff
@@ -466,20 +474,24 @@ class SwarmFeedPointer:
         delay = self._backoff
         for attempt in range(self._max_retries):
             try:
-                # The lookup resolves the latest index; the reference itself is
-                # read from the feed's single-owner chunk, NOT from the lookup
-                # body — Bee dereferences a plain feed GET and returns the
-                # pointed-to content, not the reference.
-                update = self._bee.feeds.fetch_latest(self._owner, self._topic)
-                if update.index_next >= self._next_index:
-                    identifier = self._make_feed_identifier(self._topic, update.index)
+                latest_index = self._resolve_latest_index()
+                index_next = latest_index + 1
+                if index_next > self._next_index or self._cached_ref is None:
+                    # A newer update (or we've never resolved): read the
+                    # reference from the feed's single-owner chunk — NOT from a
+                    # plain feed GET, which Bee dereferences to the pointed-to
+                    # content rather than returning the reference.
+                    identifier = self._make_feed_identifier(self._topic, latest_index)
                     soc = self._bee.file.download_soc(self._owner, identifier)
-                    ref = self._soc_reference(soc)
-                    self._cached_ref = ref
-                    self._next_index = update.index_next
+                    self._cached_ref = self._soc_reference(soc)
+                    self._next_index = index_next
                     self._cache_expiry = time.monotonic() + self._ttl
-                    return ref
-                # else stale-early: a fresher update exists; retry for it.
+                    return self._cached_ref
+                if index_next == self._next_index:
+                    # confirmed unchanged; serve cache and refresh the TTL.
+                    self._cache_expiry = time.monotonic() + self._ttl
+                    return self._cached_ref
+                # index_next < floor: stale-early lookup; retry for a fresher one.
             except self._BeeResponseError as e:
                 if getattr(e, "status", None) not in (404, 500):
                     raise
@@ -488,6 +500,26 @@ class SwarmFeedPointer:
                 time.sleep(delay)
                 delay = min(delay * 2, self._backoff_cap)
         return self._cached_ref  # last-known ref, or None if never resolved
+
+    def _resolve_latest_index(self) -> int:
+        """Latest feed index. Uses Bee's ``after`` hint once we have a confirmed
+        index to resume from — the plain lookup grows slower and flakier as a
+        feed lengthens, whereas ``after`` starts near the tip. Raises
+        ``BeeResponseError`` (404/500) when empty or on a transient miss, which
+        the retry loop in ``get`` absorbs."""
+        hint = self._next_index - 2  # one below our last-confirmed index
+        if self._can_hint and hint >= 1:
+            resp = self._bee.feeds._inner.send(
+                "GET",
+                f"feeds/{self._owner.to_hex()}/{self._topic.to_hex()}",
+                params={"after": str(hint)},
+                headers=[("Swarm-Only-Root-Chunk", "true")],
+            )
+            idx_hex = resp.headers.get("swarm-feed-index")
+            if idx_hex is not None:
+                return int(idx_hex, 16)
+        # cold, no usable hint, or missing header: the plain (unhinted) lookup.
+        return self._bee.feeds.fetch_latest(self._owner, self._topic).index
 
     @staticmethod
     def _soc_reference(soc) -> Ref:
