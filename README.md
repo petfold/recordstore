@@ -48,10 +48,10 @@ and nothing more:
 ## Install
 
 ```bash
-pip install "recordstore @ git+https://github.com/petfold/recordstore.git@v0.1.1"
+pip install "recordstore @ git+https://github.com/petfold/recordstore.git@v0.3.0"
 
 # with the Bee (Swarm) backend's HTTP dependency:
-pip install "recordstore[bee] @ git+https://github.com/petfold/recordstore.git@v0.1.1"
+pip install "recordstore[bee] @ git+https://github.com/petfold/recordstore.git@v0.3.0"
 ```
 
 Python ≥ 3.9. The core imports only the standard library; `requests` is
