@@ -4,6 +4,29 @@ All notable changes to this project are documented here. The format is based on
 [Keep a Changelog](https://keepachangelog.com/), and this project adheres to
 [Semantic Versioning](https://semver.org/).
 
+## [0.6.0] — 2026-07-20
+
+### Changed
+
+- **`BeeBytesStore` now reuses a pooled HTTP session** instead of opening a
+  fresh connection per blob op. Keep-alive removes a TCP (and TLS) handshake
+  from every read and write — the dominant per-op cost on a high-latency link —
+  and gives concurrent reads a pool of reusable connections. Locally this made
+  bulk reads ~8× faster (and fixed a case where the read concurrency was
+  *slower* than serial because every parallel request opened a cold
+  connection); the worse the link, the larger the gain. Pool size follows
+  `max_concurrent_reads`.
+- **`commit()` uploads value blobs concurrently.** A commit's value blobs are
+  independent, so they are written in one batch up front rather than one serial
+  round trip each interleaved with the trie build. Trie node writes stay
+  sequential — a parent node's reference depends on its children's
+  server-assigned refs. The resulting root is unchanged.
+
+### Added
+
+- Optional **`BytesStore.put_many(datas)`** — batch upload, mirroring
+  `get_many`. `BeeBytesStore` runs it concurrently; `MemoryBytesStore` serially.
+
 ## [0.5.1] — 2026-07-20
 
 ### Changed

@@ -48,13 +48,13 @@ and nothing more:
 ## Install
 
 ```bash
-pip install "recordstore @ git+https://github.com/petfold/recordstore.git@v0.5.1"
+pip install "recordstore @ git+https://github.com/petfold/recordstore.git@v0.6.0"
 
 # with the Bee (Swarm) bytes backend's HTTP dependency:
-pip install "recordstore[bee] @ git+https://github.com/petfold/recordstore.git@v0.5.1"
+pip install "recordstore[bee] @ git+https://github.com/petfold/recordstore.git@v0.6.0"
 
 # with the Swarm feed pointer (adds swarm-bee for SOC/secp256k1 signing):
-pip install "recordstore[feeds] @ git+https://github.com/petfold/recordstore.git@v0.5.1"
+pip install "recordstore[feeds] @ git+https://github.com/petfold/recordstore.git@v0.6.0"
 ```
 
 Python ≥ 3.9. The core imports only the standard library; both extra

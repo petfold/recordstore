@@ -420,10 +420,18 @@ comparing roots see “no change.”
 - Reads through `BeeBytesStore` are one HTTP roundtrip per (uncached) blob.
   To hydrate an entire dataset (or a prefix) use `items()` rather than
   `keys()` + `get()` per key: it batches the value-blob reads (and the trie
-  walk fetches each level as a batch too), so `BeeBytesStore` fetches them
-  concurrently instead of one serial round trip at a time — a large win on a
-  high-latency link. Tune the parallelism with `BeeBytesStore(...,
+  walk fetches each node's children as a batch too), so `BeeBytesStore` fetches
+  them concurrently instead of one serial round trip at a time — a large win on
+  a high-latency link. Tune the parallelism with `BeeBytesStore(...,
   max_concurrent_reads=N)` (default 16).
+- `BeeBytesStore` keeps a pooled, keep-alive HTTP session, so no blob op pays a
+  fresh TCP/TLS handshake — the single biggest per-op saving on a slow link.
+- On write, `commit()` uploads a commit's value blobs concurrently, but the
+  **trie node writes are serial and bottom-up**: each parent's reference is the
+  Bee-assigned hash of its children, so a node can't be written until its
+  children are. A commit therefore costs roughly *(one concurrent batch of
+  value blobs) + (one serial write per trie node on the changed paths)*. Prefer
+  fewer, larger commits over many tiny ones on a high-latency link.
 
 ---
 

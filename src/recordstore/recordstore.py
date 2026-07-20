@@ -98,6 +98,9 @@ class MemoryBytesStore:
     def get_many(self, refs: Iterable[Ref]) -> Dict[Ref, bytes]:
         return {ref: self.get(ref) for ref in refs}
 
+    def put_many(self, datas: Iterable[bytes]) -> List[Ref]:
+        return [self.put(d) for d in datas]
+
     def __len__(self):
         return len(self.blobs)
 
@@ -115,14 +118,22 @@ class BeeBytesStore:
     def __init__(self, api_url: str, postage_batch_id: str,
                  deferred_upload: bool = True, max_concurrent_reads: int = 16):
         import requests  # lazy: only needed for the real backend
-        self._requests = requests
         self.api_url = api_url.rstrip("/")
         self.batch = postage_batch_id
         self.deferred = deferred_upload
         self.max_concurrent_reads = max(1, max_concurrent_reads)
+        # A persistent session with a connection pool: keep-alive avoids a fresh
+        # TCP (and TLS) handshake on every blob op — the dominant per-op cost on
+        # a high-latency link — and gives the read pool reusable connections.
+        self._session = requests.Session()
+        adapter = requests.adapters.HTTPAdapter(
+            pool_connections=1, pool_maxsize=self.max_concurrent_reads
+        )
+        self._session.mount("http://", adapter)
+        self._session.mount("https://", adapter)
 
     def put(self, data: bytes) -> Ref:
-        r = self._requests.post(
+        r = self._session.post(
             f"{self.api_url}/bytes",
             data=data,
             headers={
@@ -148,8 +159,18 @@ class BeeBytesStore:
         with ThreadPoolExecutor(max_workers=workers) as pool:
             return dict(zip(refs, pool.map(self.get, refs)))
 
+    def put_many(self, datas: Iterable[bytes]) -> List[Ref]:
+        """Upload independent blobs concurrently, preserving order. Used for a
+        commit's value blobs, which have no dependencies on one another."""
+        datas = list(datas)
+        if not datas:
+            return []
+        workers = min(self.max_concurrent_reads, len(datas))
+        with ThreadPoolExecutor(max_workers=workers) as pool:
+            return list(pool.map(self.put, datas))
+
     def get(self, ref: Ref) -> bytes:
-        r = self._requests.get(f"{self.api_url}/bytes/{ref}", timeout=120)
+        r = self._session.get(f"{self.api_url}/bytes/{ref}", timeout=120)
         if r.status_code == 404:
             raise KeyError(f"reference not found: {ref}")
         r.raise_for_status()
@@ -772,6 +793,17 @@ class RecordStore:
         """
         if self._readonly:
             raise TypeError("read-only snapshot")
+        # Value blobs are independent, so write them all up front — concurrently
+        # if the store supports it — instead of one serial round trip each
+        # interleaved with the trie build. (Trie node writes stay sequential:
+        # a parent's ref depends on its children's server-assigned refs.)
+        writes = [(k, self._staged[k]) for k in sorted(self._staged)
+                  if self._staged[k] is not _TOMBSTONE]
+        put_many = getattr(self._blobs, "put_many", None)
+        datas = [_encode_value(v) for _, v in writes]
+        refs = put_many(datas) if put_many is not None else [self._blobs.put(d) for d in datas]
+        vref = {k: r for (k, _), r in zip(writes, refs)}
+
         root = self._root
         for key in sorted(self._staged):  # deterministic write order
             staged = self._staged[key]
@@ -782,8 +814,7 @@ class RecordStore:
                 except KeyError:
                     pass  # deleted a key that never existed in the trie
             else:
-                vref = self._blobs.put(_encode_value(staged))
-                root = self._trie.insert(root, kb, vref)
+                root = self._trie.insert(root, kb, vref[key])
         self._staged.clear()
         self._root = root
         if self._pointer is not None and root is not None:
