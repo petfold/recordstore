@@ -456,9 +456,6 @@ comparing roots see “no change.”
   `{"rsv": 1, "val": ...}`; a future format bump will change `rsv` and
   readers reject unknown versions rather than misread them. Trie nodes
   carry an analogous `"tn": 1`.
-- **Key iteration materializes matches.** `keys(prefix)` collects matching
-  keys before yielding (sorted output); very large result sets cost
-  proportional memory.
 
 ---
 

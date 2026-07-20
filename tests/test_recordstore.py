@@ -282,6 +282,30 @@ class TestBulkItems(unittest.TestCase):
     def test_items_empty(self):
         self.assertEqual(list(RecordStore(MemoryBytesStore()).items()), [])
 
+    def test_items_windowed_multiple_flushes(self):
+        # small window forces several batched flushes; output must stay complete
+        # and globally sorted across window boundaries.
+        class Small(MemoryBytesStore):
+            max_concurrent_reads = 3
+
+        store = Small()
+        rs = RecordStore(store)
+        expected = {f"k{i:02d}": {"n": i} for i in range(10)}
+        for k, v in expected.items():
+            rs.put(k, v)
+        root = rs.commit()
+        got = list(RecordStore.at(root, store).items())
+        self.assertEqual(dict(got), expected)
+        self.assertEqual([k for k, _ in got], sorted(expected))
+
+    def test_keys_lazy_generator(self):
+        rs = make()
+        for k in ("b", "a", "c"):
+            rs.put(k, k)
+        rs.commit()
+        gen = rs.keys()
+        self.assertEqual(next(gen), "a")  # partial consumption, not materialized
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -4,6 +4,20 @@ All notable changes to this project are documented here. The format is based on
 [Keep a Changelog](https://keepachangelog.com/), and this project adheres to
 [Semantic Versioning](https://semver.org/).
 
+## [0.5.1] — 2026-07-20
+
+### Changed
+
+- `keys()` and `items()` no longer buffer the whole result set and sort it at
+  the end. The trie is walked in sorted pre-order (a node's key precedes its
+  descendants', children in byte order), so keys stream out already sorted:
+  `keys()` merges the staged overlay lazily, and `items()` fetches value blobs
+  in windows (bounded by `max_concurrent_reads`) so memory stays flat on large
+  result sets while the reads still parallelise within each window. Each node's
+  children are still prefetched in one batch, preserving the 0.5.0 read
+  concurrency. Iteration order and results are unchanged — validated by the
+  fuzz suite. No API change.
+
 ## [0.5.0] — 2026-07-20
 
 ### Added

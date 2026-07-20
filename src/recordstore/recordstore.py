@@ -311,24 +311,28 @@ class _Trie:
         """All (key, value_ref) with key under `prefix`, in sorted key order."""
         if root is None:
             return
-        out = []
-        frontier = [(root, b"")]  # breadth-first: one level loaded per batch
-        while frontier:
-            nodes = self._load_many([ref for ref, _ in frontier])
-            nxt = []
-            for ref, acc in frontier:
-                node = nodes[ref]
-                full = acc + node.prefix
-                # prune subtrees that cannot contain the prefix
-                probe = min(len(full), len(prefix))
-                if full[:probe] != prefix[:probe]:
-                    continue
-                if node.value_ref is not None and full.startswith(prefix):
-                    out.append((full, node.value_ref))
-                for byte, child in node.children.items():
-                    nxt.append((child, full + bytes([byte])))
-            frontier = nxt
-        yield from sorted(out)
+        # Sorted pre-order DFS: a node's own key precedes its descendants',
+        # children visited in byte order, so keys come out sorted with no final
+        # sort and no result-set-sized buffer. Each node's children are
+        # prefetched in one batch so a network store still parallelises sibling
+        # loads (children pop from the stack as cache hits).
+        self._load_many([root])  # route the root through the batch path too
+        stack = [(root, b"")]
+        while stack:
+            ref, acc = stack.pop()
+            node = self._load(ref)
+            full = acc + node.prefix
+            # prune subtrees that cannot contain the prefix
+            probe = min(len(full), len(prefix))
+            if full[:probe] != prefix[:probe]:
+                continue
+            if node.value_ref is not None and full.startswith(prefix):
+                yield (full, node.value_ref)
+            child_bytes = sorted(node.children)
+            if child_bytes:
+                self._load_many([node.children[b] for b in child_bytes])
+                for byte in reversed(child_bytes):  # reverse: smallest pops first
+                    stack.append((node.children[byte], full + bytes([byte])))
 
 
 # ---------------------------------------------------------------------------
@@ -689,53 +693,74 @@ class RecordStore:
             raise KeyError(key)
         self._staged[key] = _TOMBSTONE
 
-    def keys(self, prefix: str = "") -> Iterator[str]:
-        """Sorted keys under `prefix`, staged overlay included."""
+    def _merged(self, prefix: str):
+        """Lazily yield `(key, vref, staged)` in sorted key order, merging the
+        committed trie stream with the staged overlay. For a committed record
+        `vref` is set and `staged` is None; for a staged put `vref` is None and
+        `staged` is the raw staged value; tombstones are dropped. Both inputs
+        are already sorted, so this is a streaming merge — nothing proportional
+        to the result set is buffered (only the small staged overlay)."""
         pb = prefix.encode("utf-8")
-        committed = {
-            k.decode("utf-8")
-            for k, _ in self._trie.items(self._root, pb)
-        }
-        for key, staged in self._staged.items():
-            if not key.startswith(prefix):
-                continue
-            if staged is _TOMBSTONE:
-                committed.discard(key)
+        committed = self._trie.items(self._root, pb)  # lazy, sorted
+        staged = sorted(k for k in self._staged if k.startswith(prefix))
+        si, ns = 0, len(staged)
+        for kb, vref in committed:
+            ck = kb.decode("utf-8")
+            while si < ns and staged[si] < ck:
+                sk = staged[si]; si += 1
+                if self._staged[sk] is not _TOMBSTONE:
+                    yield sk, None, self._staged[sk]
+            if si < ns and staged[si] == ck:  # staged entry shadows the trie
+                if self._staged[ck] is not _TOMBSTONE:
+                    yield ck, None, self._staged[ck]
+                si += 1
             else:
-                committed.add(key)
-        yield from sorted(committed)
+                yield ck, vref, None
+        while si < ns:
+            sk = staged[si]; si += 1
+            if self._staged[sk] is not _TOMBSTONE:
+                yield sk, None, self._staged[sk]
+
+    def keys(self, prefix: str = "") -> Iterator[str]:
+        """Sorted keys under `prefix`, staged overlay included, yielded lazily
+        (no result-set-sized buffer)."""
+        for key, _vref, _staged in self._merged(prefix):
+            yield key
 
     def items(self, prefix: str = ""):
         """Sorted `(key, value)` pairs under `prefix`, staged overlay included.
 
-        Committed value blobs are fetched in one batch, so over a network store
-        that implements `get_many` the whole scan parallelises its round trips
-        instead of paying one serial fetch per record — the fast path for
-        hydrating a store. Values are deep-copied, exactly like `get`."""
-        pb = prefix.encode("utf-8")
-        committed = {
-            k.decode("utf-8"): vref
-            for k, vref in self._trie.items(self._root, pb)
-        }
-        overlay = {}
-        for key, staged in self._staged.items():
-            if not key.startswith(prefix):
-                continue
-            committed.pop(key, None)  # staged value/tombstone shadows the trie
-            if staged is not _TOMBSTONE:
-                overlay[key] = json.loads(canonical_bytes(staged))  # deep copy
+        Streams in windows: value blobs are fetched a window at a time, so over
+        a network store that implements `get_many` the reads parallelise within
+        each window (the fast path for hydrating a store) while memory stays
+        bounded to one window rather than the whole result set. Values are
+        deep-copied, exactly like `get`."""
+        window = max(1, getattr(self._blobs, "max_concurrent_reads", 256))
+        buf: list = []
+        refs: List[Ref] = []
+        for key, vref, staged in self._merged(prefix):
+            buf.append((key, vref, staged))
+            if vref is not None:
+                refs.append(vref)
+            if len(refs) >= window:
+                yield from self._flush_items(buf, refs)
+                buf, refs = [], []
+        if buf:
+            yield from self._flush_items(buf, refs)
+
+    def _flush_items(self, buf, refs: List[Ref]):
+        blobs = self._fetch_blobs(refs) if refs else {}
+        for key, vref, staged in buf:
+            if vref is None:
+                yield key, json.loads(canonical_bytes(staged))  # deep copy
+            else:
+                yield key, _decode_value(blobs[vref])
+
+    def _fetch_blobs(self, refs: List[Ref]) -> Dict[Ref, bytes]:
         get_many = getattr(self._blobs, "get_many", None)
         if get_many is not None:
-            blobs = get_many(committed.values())
-            resolved = {k: _decode_value(blobs[vref]) for k, vref in committed.items()}
-        else:
-            resolved = {
-                k: _decode_value(self._blobs.get(vref))
-                for k, vref in committed.items()
-            }
-        resolved.update(overlay)
-        for key in sorted(resolved):
-            yield key, resolved[key]
+            return get_many(refs)
+        return {r: self._blobs.get(r) for r in refs}
 
     # -- commit ---------------------------------------------------------------
 
