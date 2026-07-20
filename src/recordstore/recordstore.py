@@ -202,6 +202,12 @@ class _Trie:
     def __init__(self, bytes_store: BytesStore):
         self._blobs = bytes_store
         self._cache: Dict[Ref, _Node] = {}  # nodes are immutable => safe
+        # Commit-scoped write buffer. While buffering, `_store` defers to
+        # placeholder refs instead of uploading; `_flush` then writes only the
+        # nodes surviving in the final root, bottom-up and one level per batch.
+        self._buffering = False
+        self._pending: Dict[Ref, _Node] = {}
+        self._pn = 0
 
     # -- node io -----------------------------------------------------------
 
@@ -236,16 +242,75 @@ class _Trie:
                 self._cache[r] = self._decode(blobs[r])
         return {r: self._cache[r] for r in refs}
 
-    def _store(self, node: _Node) -> Ref:
-        data = canonical_bytes({
+    @staticmethod
+    def _serialize(prefix: bytes, value_ref: Optional[Ref],
+                   children: Dict[int, Ref]) -> bytes:
+        return canonical_bytes({
             "tn": 1,
-            "p": node.prefix.hex(),
-            "v": node.value_ref,
-            "c": {format(b, "02x"): r for b, r in sorted(node.children.items())},
+            "p": prefix.hex(),
+            "v": value_ref,
+            "c": {format(b, "02x"): r for b, r in sorted(children.items())},
         })
-        ref = self._blobs.put(data)
+
+    def _store(self, node: _Node) -> Ref:
+        if self._buffering:
+            # Defer: hand back a placeholder. The real (server-assigned) ref is
+            # resolved bottom-up in `_flush`, once this node's children are real.
+            pid = f"pending:{self._pn}"
+            self._pn += 1
+            self._pending[pid] = node
+            self._cache[pid] = node  # so `_load` serves it during the build
+            return pid
+        ref = self._blobs.put(
+            self._serialize(node.prefix, node.value_ref, node.children))
         self._cache[ref] = node
         return ref
+
+    def _flush(self, root: Optional[Ref]) -> Optional[Ref]:
+        """Write the buffered nodes reachable from `root`, bottom-up with one
+        concurrent batch per level, and return the real root ref. Nodes not
+        reachable from the final root (orphaned intermediates left by
+        one-key-at-a-time insertion) are simply never written."""
+        if root is None or root not in self._pending:
+            return root  # empty result, or the root subtree was unchanged
+        reachable = set()
+        stack = [root]
+        while stack:
+            pid = stack.pop()
+            if pid in reachable:
+                continue
+            reachable.add(pid)
+            for cref in self._pending[pid].children.values():
+                if cref in self._pending:
+                    stack.append(cref)
+        put_many = getattr(self._blobs, "put_many", None)
+        resolved: Dict[Ref, Ref] = {}
+        remaining = set(reachable)
+        while root not in resolved:
+            ready = [pid for pid in remaining
+                     if all(c not in self._pending or c in resolved
+                            for c in self._pending[pid].children.values())]
+            batch = []  # (pid, node-with-real-children, bytes)
+            for pid in ready:
+                node = self._pending[pid]
+                children = {b: resolved.get(c, c) for b, c in node.children.items()}
+                real = _Node(node.prefix, node.value_ref, children)
+                batch.append((pid, real, self._serialize(
+                    real.prefix, real.value_ref, real.children)))
+            datas = [b[2] for b in batch]
+            refs = put_many(datas) if put_many else [self._blobs.put(d) for d in datas]
+            for (pid, real, _), ref in zip(batch, refs):
+                resolved[pid] = ref
+                self._cache[ref] = real  # cache with resolved children for reads
+                remaining.discard(pid)
+        return resolved[root]
+
+    def _reset_buffer(self) -> None:
+        for pid in self._pending:
+            self._cache.pop(pid, None)
+        self._pending.clear()
+        self._buffering = False
+        self._pn = 0
 
     # -- operations (functional: take a root ref, return a new root ref) ----
 
@@ -793,10 +858,8 @@ class RecordStore:
         """
         if self._readonly:
             raise TypeError("read-only snapshot")
-        # Value blobs are independent, so write them all up front — concurrently
-        # if the store supports it — instead of one serial round trip each
-        # interleaved with the trie build. (Trie node writes stay sequential:
-        # a parent's ref depends on its children's server-assigned refs.)
+        # 1. Value blobs are independent — write them all up front, concurrently
+        #    if the store supports it, instead of one serial round trip each.
         writes = [(k, self._staged[k]) for k in sorted(self._staged)
                   if self._staged[k] is not _TOMBSTONE]
         put_many = getattr(self._blobs, "put_many", None)
@@ -804,17 +867,27 @@ class RecordStore:
         refs = put_many(datas) if put_many is not None else [self._blobs.put(d) for d in datas]
         vref = {k: r for (k, _), r in zip(writes, refs)}
 
-        root = self._root
-        for key in sorted(self._staged):  # deterministic write order
-            staged = self._staged[key]
-            kb = key.encode("utf-8")
-            if staged is _TOMBSTONE:
-                try:
-                    root = self._trie.delete(root, kb)
-                except KeyError:
-                    pass  # deleted a key that never existed in the trie
-            else:
-                root = self._trie.insert(root, kb, vref[key])
+        # 2. Build the new trie with node writes buffered, then flush only the
+        #    surviving nodes bottom-up, one concurrent batch per level. (Node
+        #    writes must stay bottom-up: a parent's ref is the backend-assigned
+        #    hash of its children, so children come first.)
+        self._trie._buffering = True
+        try:
+            root = self._root
+            for key in sorted(self._staged):  # deterministic write order
+                staged = self._staged[key]
+                kb = key.encode("utf-8")
+                if staged is _TOMBSTONE:
+                    try:
+                        root = self._trie.delete(root, kb)
+                    except KeyError:
+                        pass  # deleted a key that never existed in the trie
+                else:
+                    root = self._trie.insert(root, kb, vref[key])
+            root = self._trie._flush(root)
+        finally:
+            self._trie._reset_buffer()
+
         self._staged.clear()
         self._root = root
         if self._pointer is not None and root is not None:

@@ -4,6 +4,21 @@ All notable changes to this project are documented here. The format is based on
 [Keep a Changelog](https://keepachangelog.com/), and this project adheres to
 [Semantic Versioning](https://semver.org/).
 
+## [0.7.0] — 2026-07-20
+
+### Changed
+
+- **`commit()` now writes the trie in bulk instead of one key at a time.** Node
+  writes are buffered during the insert/delete build, then flushed bottom-up one
+  level at a time via `put_many` — children before parents, since the backend
+  assigns each node's reference from its children's. Two wins: only the nodes
+  surviving in the final root are written (orphaned intermediates from
+  sequential insertion are pruned — a 20-record commit dropped from 71 blob
+  writes to 43), and each level is one concurrent batch, so a commit costs
+  O(trie depth) round-trip rounds instead of O(nodes) serial puts. The resulting
+  root is byte-identical to before — guarded by the fuzz oracle and the
+  batched-vs-incremental root-equality test. No public API change.
+
 ## [0.6.0] — 2026-07-20
 
 ### Changed

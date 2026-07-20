@@ -426,12 +426,14 @@ comparing roots see “no change.”
   max_concurrent_reads=N)` (default 16).
 - `BeeBytesStore` keeps a pooled, keep-alive HTTP session, so no blob op pays a
   fresh TCP/TLS handshake — the single biggest per-op saving on a slow link.
-- On write, `commit()` uploads a commit's value blobs concurrently, but the
-  **trie node writes are serial and bottom-up**: each parent's reference is the
-  Bee-assigned hash of its children, so a node can't be written until its
-  children are. A commit therefore costs roughly *(one concurrent batch of
-  value blobs) + (one serial write per trie node on the changed paths)*. Prefer
-  fewer, larger commits over many tiny ones on a high-latency link.
+- On write, `commit()` writes bottom-up in concurrent batches: all value blobs
+  first, then the trie nodes one level at a time (children before parents,
+  since a parent's reference is the Bee-assigned hash of its children). Only the
+  nodes surviving in the final root are written — orphaned intermediates from
+  key-by-key insertion are pruned. A commit therefore costs roughly *O(trie
+  depth) concurrent round-trip rounds*, not one serial round trip per node.
+  Still prefer fewer, larger commits on a high-latency link (fewer feed-pointer
+  updates and fewer depth rounds overall).
 
 ---
 
@@ -456,15 +458,6 @@ comparing roots see “no change.”
   The one remaining rough edge is that the `after` hint reaches Bee through a
   private `swarm-bee` transport surface until bee-py#2 exposes it publicly.
   Full rationale is in the `SwarmFeedPointer` docstring in `recordstore.py`.
-- **Commit write throughput.** A commit uploads its value blobs concurrently
-  but writes trie nodes one at a time, and inserting keys individually rewrites
-  shared ancestor nodes (orphaned intermediate writes — e.g. 71 puts for a
-  20-record commit where only ~43 blobs survive). Planned: bulk insertion that
-  builds the final trie once and writes only the surviving nodes, level by level
-  in parallel (children first, then their parent) — O(depth) concurrent write
-  rounds instead of O(nodes) serial puts. This stays bottom-up: with a
-  content-addressed backend a parent's reference is the Bee-assigned hash of its
-  children, so a node can't be written before them.
 - **Concurrency tuning across a real link.** The read/write parallelism cap
   (`BeeBytesStore(max_concurrent_reads=…)`, default 16) is a single per-store
   value; its optimum depends on the client↔node link and is best found with a

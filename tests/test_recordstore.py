@@ -307,5 +307,78 @@ class TestBulkItems(unittest.TestCase):
         self.assertEqual(next(gen), "a")  # partial consumption, not materialized
 
 
+class TestBulkCommit(unittest.TestCase):
+    def _counting(self):
+        class C(MemoryBytesStore):
+            def __init__(s):
+                super().__init__()
+                s.puts = s.put_many_calls = s.put_many_items = 0
+
+            def put(s, d):
+                s.puts += 1
+                return super().put(d)
+
+            def put_many(s, ds):
+                ds = list(ds)
+                s.put_many_calls += 1
+                s.put_many_items += len(ds)
+                return [MemoryBytesStore.put(s, d) for d in ds]  # bypass put counter
+        return C()
+
+    def test_commit_writes_are_batched_and_pruned(self):
+        store = self._counting()
+        rs = RecordStore(store)
+        recs = {f"k{i:03d}": {"n": i} for i in range(20)}
+        for k, v in recs.items():
+            rs.put(k, v)
+        root = rs.commit()
+        # all writes went through the batched path; none serial
+        self.assertEqual(store.puts, 0)
+        # O(depth) batches (1 value level + a few trie levels), not O(nodes)
+        self.assertLessEqual(store.put_many_calls, 8)
+        # orphaned intermediate nodes were never written
+        self.assertLess(store.put_many_items, 20 * 3)
+        # every key survives the reachability prune
+        self.assertEqual(dict(RecordStore.at(root, store).items()), recs)
+
+    def test_bulk_commit_matches_incremental_root(self):
+        # one big commit vs many small ones => identical canonical root
+        a = RecordStore(MemoryBytesStore())
+        for i in range(30):
+            a.put(f"x/{i:02d}", {"n": i})
+        root_bulk = a.commit()
+
+        b = RecordStore(MemoryBytesStore())
+        for i in range(30):
+            b.put(f"x/{i:02d}", {"n": i})
+            b.commit()
+        self.assertEqual(root_bulk, b.root)
+
+    def test_bulk_delete(self):
+        store = MemoryBytesStore()
+        rs = RecordStore(store)
+        for i in range(10):
+            rs.put(f"k{i}", i)
+        rs.commit()
+        for i in range(0, 10, 2):
+            rs.delete(f"k{i}")
+        root = rs.commit()
+        self.assertEqual(dict(RecordStore.at(root, store).items()),
+                         {f"k{i}": i for i in range(1, 10, 2)})
+
+    def test_mixed_put_delete_in_one_commit(self):
+        store = MemoryBytesStore()
+        rs = RecordStore(store)
+        rs.put("a", 1)
+        rs.put("b", 2)
+        rs.commit()
+        rs.put("c", 3)
+        rs.delete("a")
+        rs.put("b", 22)
+        root = rs.commit()
+        self.assertEqual(dict(RecordStore.at(root, store).items()),
+                         {"b": 22, "c": 3})
+
+
 if __name__ == "__main__":
     unittest.main()
