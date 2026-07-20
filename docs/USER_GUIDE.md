@@ -456,6 +456,22 @@ comparing roots see “no change.”
   The one remaining rough edge is that the `after` hint reaches Bee through a
   private `swarm-bee` transport surface until bee-py#2 exposes it publicly.
   Full rationale is in the `SwarmFeedPointer` docstring in `recordstore.py`.
+- **Commit write throughput.** A commit uploads its value blobs concurrently
+  but writes trie nodes one at a time, and inserting keys individually rewrites
+  shared ancestor nodes (orphaned intermediate writes — e.g. 71 puts for a
+  20-record commit where only ~43 blobs survive). Planned: bulk insertion that
+  builds the final trie once and writes only the surviving nodes, level by level
+  in parallel (children first, then their parent) — O(depth) concurrent write
+  rounds instead of O(nodes) serial puts. This stays bottom-up: with a
+  content-addressed backend a parent's reference is the Bee-assigned hash of its
+  children, so a node can't be written before them.
+- **Concurrency tuning across a real link.** The read/write parallelism cap
+  (`BeeBytesStore(max_concurrent_reads=…)`, default 16) is a single per-store
+  value; its optimum depends on the client↔node link and is best found with a
+  two-node benchmark — writer and reader on separate nodes (ideally separate
+  locations) so reads force real Swarm retrieval rather than local-store hits.
+  That measurement may also motivate splitting the cap into separate read/write
+  limits.
 - **No garbage collection.** Old versions' blobs are never deleted by this
   library. On Swarm, chunk lifetime is governed by postage stamps and the
   network's GC — content simply expires unless re-stamped or pinned; for
