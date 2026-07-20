@@ -4,6 +4,19 @@ All notable changes to this project are documented here. The format is based on
 [Keep a Changelog](https://keepachangelog.com/), and this project adheres to
 [Semantic Versioning](https://semver.org/).
 
+## [0.7.1] — 2026-07-20
+
+### Changed
+
+- CPU micro-optimizations on the hot paths, no behaviour change: `put()` now
+  canonically encodes each value once rather than twice (it was validating and
+  detaching in separate encodes), and the trie insert path uses a leaner
+  byte-prefix helper instead of `os.path.commonprefix`. ~13% less CPU on a
+  build+commit+hydrate of 5000 records (profiled over `MemoryBytesStore`).
+  Negligible for network-bound use — where round trips dominate — but useful at
+  scale and with the in-memory backend. Roots and results unchanged (fuzz +
+  full suite green).
+
 ## [0.7.0] — 2026-07-20
 
 ### Changed

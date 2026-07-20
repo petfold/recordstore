@@ -58,6 +58,17 @@ def canonical_bytes(obj) -> bytes:
     ).encode("utf-8")
 
 
+def _common_prefix(a: bytes, b: bytes) -> bytes:
+    """Longest shared byte prefix of `a` and `b`. Leaner than
+    `os.path.commonprefix` (no list/min/max wrapping) — this is on the trie's
+    hot insert path."""
+    n = min(len(a), len(b))
+    i = 0
+    while i < n and a[i] == b[i]:
+        i += 1
+    return a[:i]
+
+
 def _encode_value(value) -> bytes:
     return canonical_bytes({"rsv": _SCHEMA_VERSION, "val": value})
 
@@ -330,7 +341,7 @@ class _Trie:
         if root is None:
             return self._store(_Node(key, value_ref, {}))
         node = self._load(root)
-        common = os.path.commonprefix([node.prefix, key])
+        common = _common_prefix(node.prefix, key)
 
         if len(common) < len(node.prefix):
             # split: demote the existing node under the diverging byte
@@ -768,8 +779,10 @@ class RecordStore:
         if self._readonly:
             raise TypeError("read-only snapshot")
         self._check_key(key)
-        canonical_bytes(value)  # fail fast on non-encodable values
-        self._staged[key] = json.loads(canonical_bytes(value))  # detach
+        # One canonical encode both validates (rejects non-JSON values and
+        # NaN/Infinity) and, via the round trip, detaches from the caller's
+        # object — no need to encode twice.
+        self._staged[key] = json.loads(canonical_bytes(value))
 
     def delete(self, key: str) -> None:
         if self._readonly:
