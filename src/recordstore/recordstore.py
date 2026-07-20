@@ -103,6 +103,9 @@ def _decode_value(data: bytes):
 # ---------------------------------------------------------------------------
 
 class BytesStore(Protocol):
+    # A backend may also implement `get_many(refs) -> {ref: bytes}` and
+    # `put_many(datas) -> [ref]` for batched/parallel I/O; recordstore uses them
+    # when present and falls back to serial `get`/`put` otherwise.
     def put(self, data: bytes) -> Ref: ...
     def get(self, ref: Ref) -> bytes: ...
 
@@ -319,6 +322,8 @@ class _Trie:
             ready = [pid for pid in remaining
                      if all(c not in self._pending or c in resolved
                             for c in self._pending[pid].children.values())]
+            if not ready:  # impossible for an acyclic trie; guard against a hang
+                raise RuntimeError("trie flush stalled: no writable nodes")
             batch = []  # (pid, node-with-real-children, bytes)
             for pid in ready:
                 node = self._pending[pid]
