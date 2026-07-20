@@ -80,6 +80,17 @@ class TestAgainstLiveBee(unittest.TestCase):
         root = rs.commit()
         self.assertEqual(RecordStore.at(root, blobs).get("hub"), big)
 
+    def test_bulk_items_hydrates_concurrently(self):
+        from recordstore import RecordStore
+        blobs = self._store()
+        rs = RecordStore(blobs)
+        expected = {f"k{i:02d}": {"n": i, "tag": f"v{i}"} for i in range(20)}
+        for k, v in expected.items():
+            rs.put(k, v)
+        root = rs.commit()
+        reopened = RecordStore.at(root, blobs)  # fresh cache => real fetches
+        self.assertEqual(dict(reopened.items()), expected)
+
     def test_snapshot_isolation_over_bee(self):
         from recordstore import RecordStore
         blobs = self._store()

@@ -217,5 +217,71 @@ class TestNoAliasing(unittest.TestCase):
         self.assertEqual(rs.get("x")["up"], ["a"])
 
 
+class _CountingStore(MemoryBytesStore):
+    """MemoryBytesStore that counts serial gets vs batched get_many calls.
+    get_many reads the dict directly so it does not inflate the get counter."""
+
+    def __init__(self):
+        super().__init__()
+        self.get_calls = 0
+        self.get_many_calls = 0
+
+    def get(self, ref):
+        self.get_calls += 1
+        return super().get(ref)
+
+    def get_many(self, refs):
+        self.get_many_calls += 1
+        return {ref: self.blobs[ref] for ref in refs}
+
+
+class TestBulkItems(unittest.TestCase):
+    def _populate(self, store, n=40):
+        rs = RecordStore(store)
+        for i in range(n):
+            rs.put(f"k{i:03d}", {"n": i})
+        return rs.commit()
+
+    def test_items_matches_keys_and_get(self):
+        store = MemoryBytesStore()
+        root = self._populate(store)
+        rs = RecordStore.at(root, store)
+        expected = {k: rs.get(k) for k in rs.keys()}
+        self.assertEqual(dict(rs.items()), expected)
+        self.assertEqual([k for k, _ in rs.items()], sorted(expected))  # sorted
+
+    def test_items_uses_batched_reads_only(self):
+        store = _CountingStore()
+        root = self._populate(store, 40)
+        rs = RecordStore.at(root, store)  # fresh trie cache => real fetches
+        store.get_calls = store.get_many_calls = 0
+        result = dict(rs.items())
+        self.assertEqual(len(result), 40)
+        self.assertGreaterEqual(store.get_many_calls, 1)  # batch path taken
+        self.assertEqual(store.get_calls, 0)              # no serial per-blob gets
+
+    def test_items_staged_overlay_and_tombstone(self):
+        store = MemoryBytesStore()
+        rs = RecordStore(store)
+        rs.put("a", 1)
+        rs.put("b", 2)
+        rs.commit()
+        rs.put("c", 3)
+        rs.delete("a")
+        self.assertEqual(dict(rs.items()), {"b": 2, "c": 3})
+
+    def test_items_deep_copied(self):
+        store = MemoryBytesStore()
+        rs = RecordStore(store)
+        rs.put("x", {"list": [1, 2]})
+        rs.commit()
+        again = RecordStore.at(rs.root, store)
+        dict(again.items())["x"]["list"].append(999)  # mutate a returned copy
+        self.assertEqual(again.get("x"), {"list": [1, 2]})  # store unmutated
+
+    def test_items_empty(self):
+        self.assertEqual(list(RecordStore(MemoryBytesStore()).items()), [])
+
+
 if __name__ == "__main__":
     unittest.main()

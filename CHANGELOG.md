@@ -4,6 +4,23 @@ All notable changes to this project are documented here. The format is based on
 [Keep a Changelog](https://keepachangelog.com/), and this project adheres to
 [Semantic Versioning](https://semver.org/).
 
+## [0.5.0] — 2026-07-20
+
+### Added
+
+- **`RecordStore.items(prefix="")`** — sorted `(key, value)` pairs with the
+  committed value blobs fetched in one batch. Over a network store this
+  parallelises the reads instead of paying one serial round trip per record,
+  so hydrating a whole store (or a prefix) is dramatically faster on a
+  high-latency link. Staged overlay included; values deep-copied like `get`.
+- **Optional `BytesStore.get_many(refs)`** — batch read. `MemoryBytesStore`
+  implements it trivially; `BeeBytesStore` fetches concurrently via a thread
+  pool (`max_concurrent_reads`, default 16). Reads need no locking — everything
+  below `RecordStore` is immutable and content-addressed. Trie traversal now
+  loads each level through `get_many`, so prefix scans parallelise too. Stores
+  without `get_many` fall back to serial `get` (the protocol's required
+  contract is still just `put`/`get`).
+
 ## [0.4.1] — 2026-07-20
 
 ### Changed

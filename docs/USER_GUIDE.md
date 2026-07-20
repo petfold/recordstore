@@ -208,6 +208,7 @@ it changes only on `commit()`). `None` for a brand-new empty store.
 store.get(key)         # → value (deep copy); raises KeyError if absent
 store.contains(key)    # → bool
 store.keys(prefix="")  # → iterator of keys, sorted, staged overlay included
+store.items(prefix="") # → iterator of (key, value), sorted, staged included
 ```
 
 - Returned values are **deep copies** — mutating them never mutates the
@@ -215,6 +216,10 @@ store.keys(prefix="")  # → iterator of keys, sorted, staged overlay included
 - `keys("users/")` iterates only keys starting with that prefix, in sorted
   order. The prefix is a plain string prefix, not a path component — 
   `keys("users")` also matches `"users2/x"`.
+- `items()` is the way to read many records at once: it fetches the value
+  blobs in a single batch, so over `BeeBytesStore` the reads run concurrently
+  instead of one serial round trip per record. Prefer it over `keys()` +
+  `get()` in a loop when hydrating a whole store or prefix (see §6).
 
 ### Writing
 
@@ -413,8 +418,12 @@ comparing roots see “no change.”
   snapshot is cheap; a cold open pays one blob fetch per trie level per
   distinct path.
 - Reads through `BeeBytesStore` are one HTTP roundtrip per (uncached) blob.
-  There is no batched fetch yet; if you need to hydrate an entire dataset,
-  iterate `keys()` then `get()` — every record is fetched exactly once.
+  To hydrate an entire dataset (or a prefix) use `items()` rather than
+  `keys()` + `get()` per key: it batches the value-blob reads (and the trie
+  walk fetches each level as a batch too), so `BeeBytesStore` fetches them
+  concurrently instead of one serial round trip at a time — a large win on a
+  high-latency link. Tune the parallelism with `BeeBytesStore(...,
+  max_concurrent_reads=N)` (default 16).
 
 ---
 
@@ -432,12 +441,13 @@ comparing roots see “no change.”
   guard, following swarmfs's `bzzf://` layer. As of v0.4.1 it also passes Bee's
   `after` index hint once it has a confirmed index to resume from, so lookups
   start near the tip; because `swarm-bee`'s typed API does not expose `after`
-  (see bee-py#2) this goes through the client transport, falling back to the
-  plain lookup for cold reads. Remaining rough edges: cold reads (no confirmed
-  index yet) still use the unhinted, flakier lookup; and a never-written feed
-  only resolves to `None` after the retries exhaust, so opening a brand-new
-  feed-backed store pays that cost once. Full rationale and the measured
-  flakiness are in the `SwarmFeedPointer` docstring in `recordstore.py`.
+  (see bee-py#2) this goes through the client transport. As of v0.4.1 index
+  discovery no longer depends on the flaky lookup at all — it probes the feed's
+  SOC chunks directly (individually retrievable even when the lookup 404s), so
+  cold reads resolve in one attempt and an empty feed returns `None` at once.
+  The one remaining rough edge is that the `after` hint reaches Bee through a
+  private `swarm-bee` transport surface until bee-py#2 exposes it publicly.
+  Full rationale is in the `SwarmFeedPointer` docstring in `recordstore.py`.
 - **No garbage collection.** Old versions' blobs are never deleted by this
   library. On Swarm, chunk lifetime is governed by postage stamps and the
   network's GC — content simply expires unless re-stamped or pinned; for

@@ -33,7 +33,8 @@ import json
 import hashlib
 import os
 import time
-from typing import Dict, Iterator, Optional, Protocol, Tuple
+from concurrent.futures import ThreadPoolExecutor
+from typing import Dict, Iterable, Iterator, List, Optional, Protocol, Tuple
 
 Ref = str  # hex-encoded reference to a stored blob
 
@@ -94,6 +95,9 @@ class MemoryBytesStore:
         except KeyError:
             raise KeyError(f"reference not found: {ref}") from None
 
+    def get_many(self, refs: Iterable[Ref]) -> Dict[Ref, bytes]:
+        return {ref: self.get(ref) for ref in refs}
+
     def __len__(self):
         return len(self.blobs)
 
@@ -109,12 +113,13 @@ class BeeBytesStore:
     """
 
     def __init__(self, api_url: str, postage_batch_id: str,
-                 deferred_upload: bool = True):
+                 deferred_upload: bool = True, max_concurrent_reads: int = 16):
         import requests  # lazy: only needed for the real backend
         self._requests = requests
         self.api_url = api_url.rstrip("/")
         self.batch = postage_batch_id
         self.deferred = deferred_upload
+        self.max_concurrent_reads = max(1, max_concurrent_reads)
 
     def put(self, data: bytes) -> Ref:
         r = self._requests.post(
@@ -129,6 +134,19 @@ class BeeBytesStore:
         )
         r.raise_for_status()
         return r.json()["reference"]
+
+    def get_many(self, refs: Iterable[Ref]) -> Dict[Ref, bytes]:
+        """Fetch many references concurrently — the fast path for hydrating a
+        store over a network backend, where each read is otherwise one serial
+        HTTP round trip (painful on a high-latency link). Reads are safe to
+        parallelise freely: everything here is immutable and content-addressed,
+        so there is nothing to lock."""
+        refs = list(refs)
+        if not refs:
+            return {}
+        workers = min(self.max_concurrent_reads, len(refs))
+        with ThreadPoolExecutor(max_workers=workers) as pool:
+            return dict(zip(refs, pool.map(self.get, refs)))
 
     def get(self, ref: Ref) -> bytes:
         r = self._requests.get(f"{self.api_url}/bytes/{ref}", timeout=120)
@@ -166,19 +184,36 @@ class _Trie:
 
     # -- node io -----------------------------------------------------------
 
+    @staticmethod
+    def _decode(data: bytes) -> _Node:
+        obj = json.loads(data.decode("utf-8"))
+        if obj.get("tn") != 1:
+            raise ValueError("not a trie node or unsupported version")
+        return _Node(
+            bytes.fromhex(obj["p"]),
+            obj["v"],
+            {int(k, 16): v for k, v in obj["c"].items()},
+        )
+
     def _load(self, ref: Ref) -> _Node:
         node = self._cache.get(ref)
         if node is None:
-            obj = json.loads(self._blobs.get(ref).decode("utf-8"))
-            if obj.get("tn") != 1:
-                raise ValueError("not a trie node or unsupported version")
-            node = _Node(
-                bytes.fromhex(obj["p"]),
-                obj["v"],
-                {int(k, 16): v for k, v in obj["c"].items()},
-            )
+            node = self._decode(self._blobs.get(ref))
             self._cache[ref] = node
         return node
+
+    def _load_many(self, refs: List[Ref]) -> Dict[Ref, _Node]:
+        """Load several nodes, fetching the uncached ones in one batch so a
+        network store can parallelise the round trips (falls back to serial
+        `get` if the store has no `get_many`)."""
+        missing = list({r for r in refs if r not in self._cache})
+        if missing:
+            get_many = getattr(self._blobs, "get_many", None)
+            blobs = (get_many(missing) if get_many
+                     else {r: self._blobs.get(r) for r in missing})
+            for r in missing:
+                self._cache[r] = self._decode(blobs[r])
+        return {r: self._cache[r] for r in refs}
 
     def _store(self, node: _Node) -> Ref:
         data = canonical_bytes({
@@ -276,20 +311,23 @@ class _Trie:
         """All (key, value_ref) with key under `prefix`, in sorted key order."""
         if root is None:
             return
-        stack = [(root, b"")]
         out = []
-        while stack:
-            ref, acc = stack.pop()
-            node = self._load(ref)
-            full = acc + node.prefix
-            # prune subtrees that cannot contain the prefix
-            probe = min(len(full), len(prefix))
-            if full[:probe] != prefix[:probe]:
-                continue
-            if node.value_ref is not None and full.startswith(prefix):
-                out.append((full, node.value_ref))
-            for byte, child in node.children.items():
-                stack.append((child, full + bytes([byte])))
+        frontier = [(root, b"")]  # breadth-first: one level loaded per batch
+        while frontier:
+            nodes = self._load_many([ref for ref, _ in frontier])
+            nxt = []
+            for ref, acc in frontier:
+                node = nodes[ref]
+                full = acc + node.prefix
+                # prune subtrees that cannot contain the prefix
+                probe = min(len(full), len(prefix))
+                if full[:probe] != prefix[:probe]:
+                    continue
+                if node.value_ref is not None and full.startswith(prefix):
+                    out.append((full, node.value_ref))
+                for byte, child in node.children.items():
+                    nxt.append((child, full + bytes([byte])))
+            frontier = nxt
         yield from sorted(out)
 
 
@@ -666,6 +704,38 @@ class RecordStore:
             else:
                 committed.add(key)
         yield from sorted(committed)
+
+    def items(self, prefix: str = ""):
+        """Sorted `(key, value)` pairs under `prefix`, staged overlay included.
+
+        Committed value blobs are fetched in one batch, so over a network store
+        that implements `get_many` the whole scan parallelises its round trips
+        instead of paying one serial fetch per record — the fast path for
+        hydrating a store. Values are deep-copied, exactly like `get`."""
+        pb = prefix.encode("utf-8")
+        committed = {
+            k.decode("utf-8"): vref
+            for k, vref in self._trie.items(self._root, pb)
+        }
+        overlay = {}
+        for key, staged in self._staged.items():
+            if not key.startswith(prefix):
+                continue
+            committed.pop(key, None)  # staged value/tombstone shadows the trie
+            if staged is not _TOMBSTONE:
+                overlay[key] = json.loads(canonical_bytes(staged))  # deep copy
+        get_many = getattr(self._blobs, "get_many", None)
+        if get_many is not None:
+            blobs = get_many(committed.values())
+            resolved = {k: _decode_value(blobs[vref]) for k, vref in committed.items()}
+        else:
+            resolved = {
+                k: _decode_value(self._blobs.get(vref))
+                for k, vref in committed.items()
+            }
+        resolved.update(overlay)
+        for key in sorted(resolved):
+            yield key, resolved[key]
 
     # -- commit ---------------------------------------------------------------
 
