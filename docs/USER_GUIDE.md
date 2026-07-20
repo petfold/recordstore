@@ -481,15 +481,19 @@ comparing roots see “no change.”
 
 ## 7. Limitations and roadmap
 
-- **Concurrency control needs an opt-in and a CAS-capable pointer.**
-  `commit(reconcile=True)` (§5) makes concurrent writers converge — it
-  three-way merges and retries when the pointer moved under it — and the plain
-  `commit()` still last-write-wins. Reconciliation is race-free only against a
-  pointer that implements `compare_and_set` (`MemoryPointer` does, so in-process
-  multi-writer is correct); `FilePointer` and `SwarmFeedPointer` fall back to a
-  best-effort read-then-set, which narrows but does not close the window between
-  two writers landing. A CAS for the feed pointer (write-at-expected-index) is
-  the remaining step for fully safe cross-process multi-writer.
+- **Concurrency control is opt-in, and best-effort across a network.**
+  `commit(reconcile=True)` (§5) makes concurrent writers converge — three-way
+  merge and retry when the pointer moved under it — while plain `commit()` still
+  last-write-wins. It is race-free against a pointer with an atomic
+  `compare_and_set`: `MemoryPointer` has one, so in-process multi-writer is
+  correct. `SwarmFeedPointer` provides a *best-effort* `compare_and_set` — it
+  reads the feed head fresh (so it reliably catches a feed that already
+  advanced, the common case) and verifies its own write read-back — but a Swarm
+  feed has no atomic index claim (Bee accepts and overwrites a second update at
+  the same index), so two writers committing at the *exact same index
+  simultaneously* can still race. This narrows the window to near-simultaneous
+  collisions rather than any concurrent write. `FilePointer` has no CAS (plain
+  read-then-set).
 - **Swarm feed lookups are unreliable per call.** `SwarmFeedPointer`
   (implemented in v0.4.0, see §4) works around this — read-your-writes cache,
   monotonic write-index floor, and retry-until-stable reads with a stale-early

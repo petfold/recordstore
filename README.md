@@ -51,13 +51,13 @@ and nothing more:
 ## Install
 
 ```bash
-pip install "recordstore @ git+https://github.com/petfold/recordstore.git@v0.9.0"
+pip install "recordstore @ git+https://github.com/petfold/recordstore.git@v0.10.0"
 
 # with the Bee (Swarm) bytes backend's HTTP dependency:
-pip install "recordstore[bee] @ git+https://github.com/petfold/recordstore.git@v0.9.0"
+pip install "recordstore[bee] @ git+https://github.com/petfold/recordstore.git@v0.10.0"
 
 # with the Swarm feed pointer (adds swarm-bee for SOC/secp256k1 signing):
-pip install "recordstore[feeds] @ git+https://github.com/petfold/recordstore.git@v0.9.0"
+pip install "recordstore[feeds] @ git+https://github.com/petfold/recordstore.git@v0.10.0"
 ```
 
 Python ≥ 3.9. The core imports only the standard library; both extra
@@ -120,8 +120,8 @@ Extracted from [petfold/ontodag](https://github.com/petfold/ontodag)
 light node on Gnosis mainnet (roundtrips, canonical roots on real BMT
 references, network retrievability). `SwarmFeedPointer` (owner-signed Swarm
 feed, over `swarm-bee`) landed in v0.4.0; three-way `merge` in v0.8.0;
-auto-reconciling `commit(reconcile=True)` in v0.9.0. Known gaps —
-cross-process multi-writer needs a CAS-capable pointer (in-process
-reconciliation is race-free; a feed-index CAS is still pending), one blob per
-record — are detailed in the
-[user guide](docs/USER_GUIDE.md#limitations-and-roadmap).
+auto-reconciling `commit(reconcile=True)` in v0.9.0; a best-effort feed
+`compare_and_set` (cross-process reconcile) in v0.10.0. Known gaps — a Swarm
+feed has no atomic index claim, so exactly-simultaneous same-index writes can
+still race (in-process reconcile is race-free); one blob per record — are
+detailed in the [user guide](docs/USER_GUIDE.md#limitations-and-roadmap).

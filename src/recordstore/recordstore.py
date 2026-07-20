@@ -771,6 +771,31 @@ class SwarmFeedPointer:
                 delay = min(delay * 2, self._backoff_cap)
         return self._cached_ref  # last-known ref, or None if never resolved
 
+    def _get_fresh(self) -> Optional[Ref]:
+        """Resolve the latest root from the network, bypassing the
+        read-your-writes/TTL cache — used by `compare_and_set` so the check
+        reflects other writers, not our own cached value."""
+        self._cache_expiry = 0.0
+        return self.get()
+
+    def compare_and_set(self, expected: Optional[Ref], new: Ref) -> bool:
+        """Best-effort compare-and-set for reconciling commits. Returns True
+        only if the feed still resolved to `expected` and `new` was written and
+        read back as the latest.
+
+        Caveat: a Swarm feed has no atomic index claim — Bee accepts (and
+        overwrites with) a second update at an already-used index. So this
+        cannot be a true CAS. It reads the current head *fresh* (so it reliably
+        detects a feed that already advanced — the common case) and verifies its
+        own write read-back, which resolves most races; but two writers hitting
+        the exact same index simultaneously can still both believe they won.
+        This narrows the window rather than closing it (see the limitations in
+        the user guide)."""
+        if self._get_fresh() != expected:
+            return False
+        self.set(new)
+        return self._get_fresh() == new
+
     def _resolve_latest_index(self) -> Optional[int]:
         """Latest feed index, or ``None`` for an empty feed.
 

@@ -126,6 +126,33 @@ class TestSwarmFeedPointer(unittest.TestCase):
                                retry_backoff=0.1)
         self.assertIsNone(reader.get())
 
+    def test_compare_and_set(self):
+        topic = self._unique_topic("cas")
+        a, b = secrets.token_hex(32), secrets.token_hex(32)
+        self.assertTrue(self._pointer(topic).compare_and_set(None, a))  # empty feed
+        self.assertEqual(self._pointer(topic).get(), a)
+        # stale expected (feed holds `a`, not None) -> refused
+        self.assertFalse(self._pointer(topic).compare_and_set(None, b))
+        # correct expected -> accepted
+        self.assertTrue(self._pointer(topic).compare_and_set(a, b))
+        self.assertEqual(self._pointer(topic).get(), b)
+
+    def test_reconcile_over_feed(self):
+        from recordstore import BeeBytesStore, RecordStore
+        topic = self._unique_topic("recon")
+        blobs = BeeBytesStore(BEE_API, self.batch)
+        seed = RecordStore(blobs, pointer=self._pointer(topic))
+        seed.put("a", 1)
+        seed.commit()
+        w1 = RecordStore(blobs, pointer=self._pointer(topic))  # both branch off seed
+        w2 = RecordStore(blobs, pointer=self._pointer(topic))
+        w1.put("b", 2)
+        w2.put("c", 3)
+        w1.commit(reconcile=True)
+        w2.commit(reconcile=True)  # sees w1's advance -> merges instead of clobbering
+        final = RecordStore(blobs, pointer=self._pointer(topic))
+        self.assertEqual(dict(final.items()), {"a": 1, "b": 2, "c": 3})
+
     def test_end_to_end_recordstore_over_feed(self):
         from recordstore import BeeBytesStore, RecordStore
 

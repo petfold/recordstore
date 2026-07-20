@@ -4,6 +4,21 @@ All notable changes to this project are documented here. The format is based on
 [Keep a Changelog](https://keepachangelog.com/), and this project adheres to
 [Semantic Versioning](https://semver.org/).
 
+## [0.10.0] — 2026-07-20
+
+### Added
+
+- **`SwarmFeedPointer.compare_and_set(expected, new)`** — makes
+  `commit(reconcile=True)` work across processes over a shared Swarm feed. It
+  reads the feed head *fresh* (bypassing the read-your-writes/TTL cache, so it
+  reliably detects a feed another writer already advanced) and verifies its own
+  write read-back. It is **best-effort, not atomic**: a Swarm feed has no
+  index-claim primitive — Bee accepts and overwrites a second update at the same
+  index (confirmed against 2.8.1) — so two writers committing at the exact same
+  index simultaneously can still race. It narrows the window to near-
+  simultaneous collisions rather than any concurrent write. Verified live: two
+  writers over one feed converge (`test_reconcile_over_feed`).
+
 ## [0.9.0] — 2026-07-20
 
 ### Added
