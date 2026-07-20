@@ -514,6 +514,14 @@ comparing roots see “no change.”
   locations) so reads force real Swarm retrieval rather than local-store hits.
   That measurement may also motivate splitting the cap into separate read/write
   limits.
+- **Trie depth is bounded by recursion.** `insert`, `delete`, and `merge`
+  recurse to the trie's depth, so a key set that *nests* very deeply — thousands
+  of keys each a prefix of the next, or keys sharing a multi-thousand-byte
+  prefix — can exceed Python's recursion limit (~1000) and raise
+  `RecursionError`. Realistic key sets (path-like, moderate length) produce
+  shallow compacted tries and are unaffected; the practical ceiling is ~1000
+  levels of *distinct* nesting. Converting the trie walks to explicit stacks
+  would remove the limit if a use case ever needs it.
 - **No garbage collection.** Old versions' blobs are never deleted by this
   library. On Swarm, chunk lifetime is governed by postage stamps and the
   network's GC — content simply expires unless re-stamped or pinned; for
