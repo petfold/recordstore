@@ -8,14 +8,20 @@ All notable changes to this project are documented here. The format is based on
 
 ### Changed
 
-- `SwarmFeedPointer.get()` now passes Bee's `after` index hint
-  (`GET /feeds/{owner}/{topic}?after=N`) once it has a confirmed index to
-  resume from, so the lookup starts just below the tip instead of probing from
-  scratch — cheaper and markedly less flaky as a feed grows (verified live on
-  Bee 2.8.1: `?after=N` resolves where the plain lookup 404s). swarm-bee's typed
-  API does not expose `after` (see bee-py#2), so it is sent through the client
-  transport, falling back to the plain lookup when the transport is unavailable
-  or the feed has no confirmed index yet (cold reads). No API change.
+- **`SwarmFeedPointer` index discovery no longer depends on the flaky /feeds
+  lookup.** The tip index is found by probing the feed's SOC chunks directly
+  (exponential + binary search over `download_soc`), which are individually
+  retrievable even when the /feeds lookup 404s on a high-latency link — the
+  failure mode reported in ethersphere/bee#5251. This makes *cold* reads (a
+  fresh reader with no cached index) reliable in a single attempt, and lets
+  `set()` place the next index correctly without a network lookup when it
+  already has a floor (single-writer model).
+- The warm read path additionally tries Bee's `after` index hint
+  (`GET /feeds/{owner}/{topic}?after=N`) first — one round trip, resuming just
+  below the tip — and falls back to the SOC probe when it flakes. swarm-bee's
+  typed API does not expose `after` (see bee-py#2), so it is sent through the
+  client transport, guarded by a capability check. Verified live on Bee 2.8.1
+  (`?after=N` resolves where the plain lookup 404s). No public API change.
 
 ## [0.4.0] — 2026-07-20
 

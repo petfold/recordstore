@@ -365,10 +365,15 @@ class SwarmFeedPointer:
       ``max(network_next, local_floor)``. Without the floor, back-to-back
       commits would reuse an index while the first SOC is still propagating,
       and the second update would be silently dropped.
-    - **Retry-until-stable reads.** A cold or TTL-expired ``get()`` retries the
-      lookup with exponential backoff, ignoring transient 404s, and never
-      adopts a result whose index regresses below what it has already seen
-      (the stale-early guard).
+    - **Reliable index discovery.** The tip index is found by probing the feed's
+      SOC chunks directly (exponential + binary search) rather than trusting the
+      flaky /feeds lookup — the SOC chunks are individually retrievable even when
+      the lookup 404s. This is what makes a *cold* read (no cached index to hint
+      from) reliable. The warm path still tries the cheaper ``after``-hinted
+      lookup first and only falls back to probing when it flakes.
+    - **Retry-until-stable reads.** ``get()`` retries with exponential backoff on
+      transient chunk-fetch errors and never adopts a result whose index
+      regresses below what it has already seen (the stale-early guard).
 
     This policy follows swarmfs's ``bzzf://`` feed layer, the reference
     implementation for this Swarm characteristic. Once a feed has been resolved
@@ -452,10 +457,15 @@ class SwarmFeedPointer:
                 "SwarmFeedPointer.set requires both a signer and a "
                 "postage_batch_id"
             )
-        # max(network, local floor): respect another writer who advanced the
-        # feed, but never reuse an index whose SOC has not propagated yet.
-        network_next = self._bee.feeds.find_next_index(self._owner, self._topic)
-        index = max(network_next, self._next_index)
+        # A persistent writer's floor is authoritative (single-writer model);
+        # only a cold instance has to discover where the feed currently ends,
+        # and it does so by probing SOC chunks — reliable even when the /feeds
+        # lookup flakes on a high-latency link.
+        if self._next_index > 0:
+            index = self._next_index
+        else:
+            probed = self._probe_latest_index()
+            index = probed + 1 if probed is not None else 0
         self._bee.feeds.update_feed_with_reference(
             batch_id=self._batch,
             signer=self._signer,
@@ -475,6 +485,8 @@ class SwarmFeedPointer:
         for attempt in range(self._max_retries):
             try:
                 latest_index = self._resolve_latest_index()
+                if latest_index is None:
+                    return self._cached_ref  # feed is empty (definitive)
                 index_next = latest_index + 1
                 if index_next > self._next_index or self._cached_ref is None:
                     # A newer update (or we've never resolved): read the
@@ -501,25 +513,60 @@ class SwarmFeedPointer:
                 delay = min(delay * 2, self._backoff_cap)
         return self._cached_ref  # last-known ref, or None if never resolved
 
-    def _resolve_latest_index(self) -> int:
-        """Latest feed index. Uses Bee's ``after`` hint once we have a confirmed
-        index to resume from — the plain lookup grows slower and flakier as a
-        feed lengthens, whereas ``after`` starts near the tip. Raises
-        ``BeeResponseError`` (404/500) when empty or on a transient miss, which
+    def _resolve_latest_index(self) -> Optional[int]:
+        """Latest feed index, or ``None`` for an empty feed.
+
+        Warm path: resume the (flaky) /feeds lookup near the tip via Bee's
+        ``after`` hint — one round trip when it works. Cold path, or when the
+        hinted lookup flakes: probe the feed's SOC chunks directly, which are
+        individually retrievable even when the /feeds lookup does not resolve.
+        Raises ``BeeResponseError`` only on transient chunk-fetch errors, which
         the retry loop in ``get`` absorbs."""
         hint = self._next_index - 2  # one below our last-confirmed index
         if self._can_hint and hint >= 1:
-            resp = self._bee.feeds._inner.send(
-                "GET",
-                f"feeds/{self._owner.to_hex()}/{self._topic.to_hex()}",
-                params={"after": str(hint)},
-                headers=[("Swarm-Only-Root-Chunk", "true")],
-            )
-            idx_hex = resp.headers.get("swarm-feed-index")
-            if idx_hex is not None:
-                return int(idx_hex, 16)
-        # cold, no usable hint, or missing header: the plain (unhinted) lookup.
-        return self._bee.feeds.fetch_latest(self._owner, self._topic).index
+            try:
+                resp = self._bee.feeds._inner.send(
+                    "GET",
+                    f"feeds/{self._owner.to_hex()}/{self._topic.to_hex()}",
+                    params={"after": str(hint)},
+                    headers=[("Swarm-Only-Root-Chunk", "true")],
+                )
+                idx_hex = resp.headers.get("swarm-feed-index")
+                if idx_hex is not None:
+                    return int(idx_hex, 16)
+            except self._BeeResponseError as e:
+                if getattr(e, "status", None) not in (404, 500):
+                    raise
+                # hinted lookup flaked; fall through to the reliable probe.
+        return self._probe_latest_index()
+
+    def _probe_latest_index(self) -> Optional[int]:
+        """Highest existing feed index (``None`` if the feed is empty), found by
+        probing single-owner-chunk addresses. Sequential feeds have no gaps, so
+        an exponential + binary search over SOC existence pins the tip in
+        O(log n) reliable chunk fetches — no /feeds lookup involved."""
+        if not self._soc_exists(0):
+            return None
+        lo, hi = 0, 1
+        while self._soc_exists(hi):
+            lo, hi = hi, hi * 2
+        while hi - lo > 1:
+            mid = (lo + hi) // 2
+            if self._soc_exists(mid):
+                lo = mid
+            else:
+                hi = mid
+        return lo
+
+    def _soc_exists(self, index: int) -> bool:
+        identifier = self._make_feed_identifier(self._topic, index)
+        try:
+            self._bee.file.download_soc(self._owner, identifier)
+            return True
+        except self._BeeResponseError as e:
+            if getattr(e, "status", None) == 404:
+                return False
+            raise  # transient (e.g. 500): let the caller retry
 
     @staticmethod
     def _soc_reference(soc) -> Ref:

@@ -110,6 +110,15 @@ class TestSwarmFeedPointer(unittest.TestCase):
         self.assertTrue(p._can_hint)  # transport supports the hint here
         self.assertEqual(p.get(), refs[-1])
 
+    def test_cold_read_resolves_without_retries(self):
+        # Cold reads resolve via reliable SOC probing, not the flaky /feeds
+        # lookup, so a single attempt (no retries) suffices.
+        topic = self._unique_topic("coldprobe")
+        ref = secrets.token_hex(32)
+        self._pointer(topic).set(ref)
+        reader = self._pointer(topic, max_lookup_retries=1)
+        self.assertEqual(reader.get(), ref)
+
     def test_empty_feed_reads_as_none(self):
         # Never-written feed: retries exhaust and get() reports None (empty),
         # which RecordStore treats as "start from the empty dataset".
