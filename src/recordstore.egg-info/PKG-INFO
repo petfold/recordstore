@@ -1,8 +1,0 @@
-Metadata-Version: 2.4
-Name: recordstore
-Version: 0.1.0
-Summary: Versioned key-record store over a content-addressed chunk store (memory or Ethereum Swarm/Bee backends)
-License: MIT
-Requires-Python: >=3.9
-Provides-Extra: bee
-Requires-Dist: requests; extra == "bee"

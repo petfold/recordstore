@@ -1,6 +1,6 @@
 from .recordstore import (
     RecordStore,
-    MemoryChunkStore,
+    MemoryBytesStore,
     BeeBytesStore,
     MemoryPointer,
     FilePointer,
@@ -10,7 +10,7 @@ from .recordstore import (
 
 __all__ = [
     "RecordStore",
-    "MemoryChunkStore",
+    "MemoryBytesStore",
     "BeeBytesStore",
     "MemoryPointer",
     "FilePointer",

@@ -14,7 +14,7 @@ depths, unicode, and single-character keys.
 import random
 import unittest
 
-from recordstore import MemoryChunkStore, RecordStore
+from recordstore import MemoryBytesStore, RecordStore
 
 
 KEY_POOL = (
@@ -27,7 +27,7 @@ KEY_POOL = (
 
 def rebuild_root(content):
     """Root of a fresh store containing exactly `content` (one commit)."""
-    rs = RecordStore(MemoryChunkStore())
+    rs = RecordStore(MemoryBytesStore())
     for k, v in content.items():
         rs.put(k, v)
     return rs.commit()
@@ -39,7 +39,7 @@ class TestFuzzAgainstDictModel(unittest.TestCase):
 
     def _run(self, seed):
         rng = random.Random(seed)
-        rs = RecordStore(MemoryChunkStore())
+        rs = RecordStore(MemoryBytesStore())
         model = {}
 
         for step in range(self.OPS_PER_RUN):

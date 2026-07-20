@@ -44,13 +44,13 @@ class TestAgainstLiveBee(unittest.TestCase):
 
     def test_roundtrip_through_bee(self):
         from recordstore import RecordStore
-        chunks = self._store()
-        rs = RecordStore(chunks)
+        blobs = self._store()
+        rs = RecordStore(blobs)
         rec = {"up": ["vehicle"], "down": ["tesla"], "count": 1}
         rs.put("car", rec)
         rs.put("ns:日本語", {"unicode": True})
         root = rs.commit()
-        again = RecordStore.at(root, chunks)
+        again = RecordStore.at(root, blobs)
         self.assertEqual(again.get("car"), rec)
         self.assertEqual(again.get("ns:日本語"), {"unicode": True})
         self.assertEqual(list(again.keys()), ["car", "ns:日本語"])
@@ -73,20 +73,20 @@ class TestAgainstLiveBee(unittest.TestCase):
     def test_large_record_uses_bee_splitter(self):
         """A record far exceeding one 4 KB chunk still yields one reference."""
         from recordstore import RecordStore
-        chunks = self._store()
-        rs = RecordStore(chunks)
+        blobs = self._store()
+        rs = RecordStore(blobs)
         big = {"blob": "x" * 50_000, "edges": [f"e{i}" for i in range(500)]}
         rs.put("hub", big)
         root = rs.commit()
-        self.assertEqual(RecordStore.at(root, chunks).get("hub"), big)
+        self.assertEqual(RecordStore.at(root, blobs).get("hub"), big)
 
     def test_snapshot_isolation_over_bee(self):
         from recordstore import RecordStore
-        chunks = self._store()
-        writer = RecordStore(chunks)
+        blobs = self._store()
+        writer = RecordStore(blobs)
         writer.put("a", {"v": 1})
         root1 = writer.commit()
-        reader = RecordStore.at(root1, chunks)
+        reader = RecordStore.at(root1, blobs)
         writer.put("a", {"v": 2})
         writer.commit()
         self.assertEqual(reader.get("a"), {"v": 1})

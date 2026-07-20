@@ -1,9 +1,0 @@
-README.md
-pyproject.toml
-src/recordstore/__init__.py
-src/recordstore/recordstore.py
-src/recordstore.egg-info/PKG-INFO
-src/recordstore.egg-info/SOURCES.txt
-src/recordstore.egg-info/dependency_links.txt
-src/recordstore.egg-info/requires.txt
-src/recordstore.egg-info/top_level.txt

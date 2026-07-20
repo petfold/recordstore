@@ -8,7 +8,7 @@ depends on:
                                  insertion order or history (CRDT precondition)
   R3  Snapshot isolation       - a reader pinned to a root is unaffected by
                                  later commits; commits are all-or-nothing
-  R4  Structural sharing       - a small change writes O(depth) chunks,
+  R4  Structural sharing       - a small change writes O(depth) blobs,
                                  not O(dataset)
   R5  Prefix iteration         - sorted, namespace-style key listing,
                                  staged overlay included
@@ -22,16 +22,16 @@ import os
 import tempfile
 import unittest
 
-from recordstore import FilePointer, MemoryChunkStore, MemoryPointer, RecordStore
+from recordstore import FilePointer, MemoryBytesStore, MemoryPointer, RecordStore
 
 
-def make(chunks=None, pointer=None):
-    return RecordStore(chunks or MemoryChunkStore(), pointer=pointer)
+def make(bytes_store=None, pointer=None):
+    return RecordStore(bytes_store or MemoryBytesStore(), pointer=pointer)
 
 
 class TestRoundtrip(unittest.TestCase):
     def test_put_get_commit_get(self):
-        store = MemoryChunkStore()
+        store = MemoryBytesStore()
         rs = RecordStore(store)
         rec = {"up": ["vehicle"], "down": [], "count": 0}
         rs.put("car", rec)
@@ -69,7 +69,7 @@ class TestCanonicalRoots(unittest.TestCase):
     RECORDS = {f"ns:key{i:03d}": {"n": i, "tags": ["a", "b"]} for i in range(60)}
 
     def _root_via(self, order, extra_churn=False):
-        store = MemoryChunkStore()
+        store = MemoryBytesStore()
         rs = RecordStore(store)
         for k in order:
             rs.put(k, self.RECORDS[k])
@@ -92,7 +92,7 @@ class TestCanonicalRoots(unittest.TestCase):
     def test_batched_vs_incremental_same_root(self):
         keys = list(self.RECORDS)
         incremental = self._root_via(keys)
-        store = MemoryChunkStore()
+        store = MemoryBytesStore()
         rs = RecordStore(store)
         for k in keys:
             rs.put(k, self.RECORDS[k])
@@ -102,7 +102,7 @@ class TestCanonicalRoots(unittest.TestCase):
 
 class TestSnapshotIsolation(unittest.TestCase):
     def test_reader_pinned_to_old_root(self):
-        store = MemoryChunkStore()
+        store = MemoryBytesStore()
         writer = RecordStore(store)
         writer.put("car", {"count": 1})
         root1 = writer.commit()
@@ -117,7 +117,7 @@ class TestSnapshotIsolation(unittest.TestCase):
         self.assertEqual(list(reader.keys()), ["car"])
 
     def test_snapshot_is_readonly(self):
-        store = MemoryChunkStore()
+        store = MemoryBytesStore()
         rs = RecordStore(store)
         rs.put("a", 1)
         snap = RecordStore.at(rs.commit(), store)
@@ -136,8 +136,8 @@ class TestSnapshotIsolation(unittest.TestCase):
 
 
 class TestStructuralSharing(unittest.TestCase):
-    def test_small_update_writes_few_chunks(self):
-        store = MemoryChunkStore()
+    def test_small_update_writes_few_blobs(self):
+        store = MemoryBytesStore()
         rs = RecordStore(store)
         for i in range(200):
             rs.put(f"node{i:04d}", {"payload": i})
@@ -146,8 +146,8 @@ class TestStructuralSharing(unittest.TestCase):
         rs.put("node0042", {"payload": "changed"})
         rs.commit()
         added = len(store) - before
-        # one value chunk + the rewritten trie path; must be far below 200
-        self.assertLess(added, 12, f"update rewrote {added} chunks")
+        # one value blob + the rewritten trie path; must be far below 200
+        self.assertLess(added, 12, f"update rewrote {added} blobs")
 
 
 class TestPrefixIteration(unittest.TestCase):
@@ -182,7 +182,7 @@ class TestFilePointer(unittest.TestCase):
         self.assertEqual(FilePointer(self.path).get(), "abc123")  # fresh instance
 
     def test_commit_persists_root_across_restart(self):
-        store = MemoryChunkStore()
+        store = MemoryBytesStore()
         rs = RecordStore(store, pointer=FilePointer(self.path))
         rs.put("car", {"up": ["vehicle"]})
         root = rs.commit()
@@ -192,7 +192,7 @@ class TestFilePointer(unittest.TestCase):
         self.assertEqual(again.get("car"), {"up": ["vehicle"]})
 
     def test_second_commit_replaces_root_without_tmp_residue(self):
-        store = MemoryChunkStore()
+        store = MemoryBytesStore()
         rs = RecordStore(store, pointer=FilePointer(self.path))
         rs.put("a", 1)
         first = rs.commit()

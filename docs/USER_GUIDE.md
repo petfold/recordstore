@@ -1,7 +1,7 @@
 # recordstore — User Guide
 
 `recordstore` is a versioned key→record store layered over any
-content-addressed chunk store. This guide covers the concepts, the full
+content-addressed bytes store. This guide covers the concepts, the full
 public API, the canonicity contract, running against a real Swarm/Bee node,
 common versioning patterns, and current limitations.
 
@@ -10,7 +10,7 @@ Everything documented here is importable from the top-level package:
 ```python
 from recordstore import (
     RecordStore,
-    MemoryChunkStore, BeeBytesStore,
+    MemoryBytesStore, BeeBytesStore,
     MemoryPointer, FilePointer, SwarmFeedPointer,
     canonical_bytes,
 )
@@ -116,24 +116,24 @@ namespacing for free.
 ### Roots and versions
 
 All records live in a persistent (copy-on-write) compacted radix trie whose
-nodes are chunks in the chunk store. The trie's **root reference** — a hex
+nodes are stored as blobs in the bytes store. The trie's **root reference** — a hex
 string — identifies one immutable, self-consistent snapshot of the *entire*
 dataset. A root is to a dataset what a commit hash is to a git tree:
 
 - hold a root ⇒ you can read that exact version forever (as long as the
-  chunks exist),
+  blobs exist),
 - compare two roots with `==` ⇒ you know whether two datasets are identical,
 - share a root ⇒ someone else can open the same version.
 
 ### Staging and commit
 
 A `RecordStore` accumulates `put`/`delete` calls **in memory**. Nothing
-touches the chunk store until `commit()`, which writes the changed records
+touches the bytes store until `commit()`, which writes the changed records
 and trie paths and returns the new root. Reads are
 **read-your-writes**: staged changes shadow the committed state, so
 `get`/`keys`/`contains` always reflect what you would see after committing.
 
-Because versions share structure, a commit writes only the chunks along the
+Because versions share structure, a commit writes only the blobs along the
 paths that changed; everything else is reused from the previous version.
 
 ### The canonicity guarantee
@@ -147,7 +147,7 @@ This holds because every encoding in the stack is deterministic:
 - **Values** are encoded with `canonical_bytes` — JSON with sorted object
   keys, minimal separators, UTF-8, `NaN`/`Infinity` rejected (they have no
   canonical JSON form). Two structurally equal values always produce the
-  same bytes, hence the same chunk reference.
+  same bytes, hence the same blob reference.
 - **Trie nodes** are canonically encoded, and the trie maintains two
   structural invariants so its *shape* is a pure function of its contents:
   a node with no value and no children does not exist, and a node with no
@@ -177,10 +177,10 @@ encodings of its own (hashing application-level objects, testing).
 ### Constructing
 
 ```python
-RecordStore(chunks, root=None, pointer=None)
+RecordStore(bytes_store, root=None, pointer=None)
 ```
 
-- `chunks` — any object satisfying the `ChunkStore` protocol (§3).
+- `bytes_store` — any object satisfying the `BytesStore` protocol (§3).
 - `root` — open at an existing version. `None` starts from the empty
   dataset (or from the pointer's value, see next).
 - `pointer` — any object satisfying the `Pointer` protocol (§4). If given
@@ -188,7 +188,7 @@ RecordStore(chunks, root=None, pointer=None)
   successful `commit()` then advances the pointer to the new root.
 
 ```python
-RecordStore.at(root, chunks)   # classmethod
+RecordStore.at(root, bytes_store)   # classmethod
 ```
 
 Opens a **read-only snapshot** at `root`. Reads work as usual;
@@ -241,7 +241,7 @@ root = store.commit()  # → new root reference (hex string), or None if the
 
 Flushes staged changes in deterministic (sorted-key) order, updates
 `store.root`, advances the pointer if one is attached, and returns the new
-root. The pointer moves only after every chunk write has succeeded, so a
+root. The pointer moves only after every blob write has succeeded, so a
 reader following the pointer sees all of a commit or none of it.
 
 Deleting a key that was staged-but-never-committed simply drops it;
@@ -256,16 +256,16 @@ committing a delete of a key that never existed in the trie is a no-op.
 | non-JSON-encodable value in `put` | `TypeError` / `ValueError` |
 | `NaN` / `Infinity` in a value | `ValueError` |
 | write on a read-only snapshot | `TypeError` |
-| chunk missing from the chunk store | `KeyError` (from the backend) |
+| blob missing from the bytes store | `KeyError` (from the backend) |
 
 ---
 
-## 3. Chunk store backends
+## 3. Bytes store backends
 
-The `ChunkStore` protocol is two methods:
+The `BytesStore` protocol is two methods:
 
 ```python
-class ChunkStore(Protocol):
+class BytesStore(Protocol):
     def put(self, data: bytes) -> str: ...   # → reference
     def get(self, ref: str) -> bytes: ...    # KeyError if missing
 ```
@@ -273,10 +273,10 @@ class ChunkStore(Protocol):
 Any content-addressed store satisfying it works — the reference just has to
 be a stable hex string determined by the content.
 
-### `MemoryChunkStore()`
+### `MemoryBytesStore()`
 
 A dict keyed by SHA-256. Use it for tests and ephemeral work; `len(store)`
-gives the chunk count. Data lives only as long as the object.
+gives the blob count. Data lives only as long as the object.
 
 ### `BeeBytesStore(api_url, postage_batch_id, deferred_upload=True)`
 
@@ -306,11 +306,11 @@ A quick smoke against a local node:
 ```python
 from recordstore import RecordStore, BeeBytesStore
 
-chunks = BeeBytesStore("http://localhost:1633", "<batch-id>")
-store = RecordStore(chunks)
+blobs = BeeBytesStore("http://localhost:1633", "<batch-id>")
+store = RecordStore(blobs)
 store.put("hello", {"world": True})
 root = store.commit()
-print(RecordStore.at(root, chunks).get("hello"))
+print(RecordStore.at(root, blobs).get("hello"))
 ```
 
 Because chunks are immutable and content-addressed, mixing backends is
@@ -334,10 +334,10 @@ Attach one at construction and it is read at open and advanced on every
 commit:
 
 ```python
-from recordstore import RecordStore, MemoryChunkStore, FilePointer
+from recordstore import RecordStore, MemoryBytesStore, FilePointer
 
 pointer = FilePointer("/var/lib/myapp/ROOT")
-store = RecordStore(chunks, pointer=pointer)   # opens at the pointed root
+store = RecordStore(blobs, pointer=pointer)   # opens at the pointed root
 store.put("k", 1)
 store.commit()                                  # pointer now names the new root
 ```
@@ -365,7 +365,7 @@ v1 = store.commit()
 store.put("config", {"mode": "fast"})
 v2 = store.commit()
 
-old = RecordStore.at(v1, chunks)   # v1 is untouched by later commits
+old = RecordStore.at(v1, blobs)   # v1 is untouched by later commits
 ```
 
 **Long consistent reads.** Snapshots are immutable, so a reporting job can
@@ -389,15 +389,15 @@ comparing roots see “no change.”
 
 ## 6. Performance notes
 
-- **One record = one value chunk**, plus one chunk per trie node along the
+- **One record = one value blob**, plus one blob per trie node along the
   key's path. Trie nodes are compacted (radix), so path length tracks key
   *distinctiveness*, not key length.
-- **Commits write O(changed paths) chunks**, not O(dataset).
+- **Commits write O(changed paths) blobs**, not O(dataset).
 - **Trie nodes are cached in memory** after first load (they are immutable,
   so the cache never invalidates). Re-reading the same region of a store or
-  snapshot is cheap; a cold open pays one chunk fetch per trie level per
+  snapshot is cheap; a cold open pays one blob fetch per trie level per
   distinct path.
-- Reads through `BeeBytesStore` are one HTTP roundtrip per (uncached) chunk.
+- Reads through `BeeBytesStore` are one HTTP roundtrip per (uncached) blob.
   There is no batched fetch yet; if you need to hydrate an entire dataset,
   iterate `keys()` then `get()` — every record is fetched exactly once.
 
@@ -419,11 +419,11 @@ comparing roots see “no change.”
   `bzzf://` layer is the reference implementation. Full rationale and the
   measured flakiness are in the `SwarmFeedPointer` docstring in
   `recordstore.py`.
-- **No garbage collection.** Old versions' chunks are never deleted by this
+- **No garbage collection.** Old versions' blobs are never deleted by this
   library. On Swarm, chunk lifetime is governed by postage stamps and the
   network's GC — content simply expires unless re-stamped or pinned; for
-  `MemoryChunkStore` everything lives until the process exits.
-- **Record schema version.** Every value chunk is wrapped in
+  `MemoryBytesStore` everything lives until the process exits.
+- **Record schema version.** Every value blob is wrapped in
   `{"rsv": 1, "val": ...}`; a future format bump will change `rsv` and
   readers reject unknown versions rather than misread them. Trie nodes
   carry an analogous `"tn": 1`.
@@ -446,6 +446,6 @@ The test suite doubles as executable documentation:
 - `tests/test_boundaries.py` — enforces that module-level imports stay
   stdlib-only.
 
-When building on the `ChunkStore` or `Pointer` protocols, the
-`MemoryChunkStore`/`MemoryPointer` pairing plus the fuzz test's
+When building on the `BytesStore` or `Pointer` protocols, the
+`MemoryBytesStore`/`MemoryPointer` pairing plus the fuzz test's
 oracle pattern is a good template for validating an implementation.

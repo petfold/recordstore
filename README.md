@@ -1,15 +1,15 @@
 # recordstore
 
-A versioned key→record store over a content-addressed chunk store — a thin
+A versioned key→record store over a content-addressed bytes store — a thin
 database kernel between an immutable blob store (such as [Ethereum
 Swarm](https://www.ethswarm.org/)) and an application that wants to think in
-records and versions rather than chunks and references.
+records and versions rather than blobs and references.
 
 ```python
-from recordstore import RecordStore, MemoryChunkStore
+from recordstore import RecordStore, MemoryBytesStore
 
-chunks = MemoryChunkStore()
-store = RecordStore(chunks)
+blobs = MemoryBytesStore()
+store = RecordStore(blobs)
 store.put("users/alice", {"name": "Alice", "role": "admin"})
 store.put("users/bob", {"name": "Bob"})
 root = store.commit()          # one reference identifies this entire version
@@ -17,7 +17,7 @@ root = store.commit()          # one reference identifies this entire version
 store.get("users/alice")       # {'name': 'Alice', 'role': 'admin'}
 list(store.keys("users/"))     # ['users/alice', 'users/bob']
 
-snapshot = RecordStore.at(root, chunks)   # frozen view of that version
+snapshot = RecordStore.at(root, blobs)   # frozen view of that version
 ```
 
 ## Why
@@ -32,7 +32,7 @@ and nothing more:
 - **Atomic, versioned commits** — mutations are staged in memory;
   `commit()` lands all of them as one new **root reference**. A reader
   either sees all of a commit or none of it.
-- **Snapshot isolation** — `RecordStore.at(root, chunks)` pins one root and
+- **Snapshot isolation** — `RecordStore.at(root, blobs)` pins one root and
   sees a frozen, self-consistent dataset for arbitrarily long reads, with
   no locking: the whole dataset-at-a-version *is* one reference.
 - **Canonical roots** — encodings are deterministic, so **equal content
@@ -41,7 +41,7 @@ and nothing more:
   with a string equality check, and cheap to diff and merge above this
   layer.
 - **Structural sharing** — versions are stored as a persistent
-  (copy-on-write) compacted radix trie; a commit writes only the chunks
+  (copy-on-write) compacted radix trie; a commit writes only the blobs
   along the changed paths, and unchanged subtrees are shared between
   versions.
 
@@ -61,12 +61,12 @@ needed (and imported lazily) only by `BeeBytesStore`.
 
 | Layer | What it does | Implementations |
 |---|---|---|
-| `ChunkStore` | `put(bytes) → ref`, `get(ref) → bytes` | `MemoryChunkStore` (in-memory, testing), `BeeBytesStore` (Swarm Bee node over `/bytes` — the blob endpoint, not the raw `/chunks/{address}` primitive) |
-| trie (internal) | canonical persistent radix trie mapping keys to value chunks | — |
+| `BytesStore` | `put(bytes) → ref`, `get(ref) → bytes` | `MemoryBytesStore` (in-memory, testing), `BeeBytesStore` (Swarm Bee node over `/bytes` — the blob endpoint, not the raw `/chunks/{address}` primitive) |
+| trie (internal) | canonical persistent radix trie mapping keys to value blobs | — |
 | `RecordStore` | staging, `commit() → root`, snapshots, sorted prefix iteration | — |
 | `Pointer` | mutable name for the latest root | `MemoryPointer`, `FilePointer` (atomic local file), `SwarmFeedPointer` (documented stub) |
 
-Nothing above `RecordStore` ever sees a chunk or a trie node.
+Nothing above `RecordStore` ever sees a stored blob or a trie node.
 
 ## Documentation
 
@@ -107,6 +107,6 @@ Extracted from [petfold/ontodag](https://github.com/petfold/ontodag)
 (July 2026) with history preserved; validated against a live Bee 2.8.1
 light node on Gnosis mainnet (roundtrips, canonical roots on real BMT
 references, network retrievability). Known gaps — single-writer only (no
-concurrency control), `SwarmFeedPointer` not yet implemented, one chunk
+concurrency control), `SwarmFeedPointer` not yet implemented, one blob
 per record — are detailed in the
 [user guide](docs/USER_GUIDE.md#limitations-and-roadmap).

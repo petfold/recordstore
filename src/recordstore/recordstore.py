@@ -1,4 +1,4 @@
-"""recordstore: a versioned record store over a content-addressed chunk store.
+"""recordstore: a versioned record store over a content-addressed bytes store.
 
 This is the thin database kernel between Swarm (immutable chunks + a mutable
 feed pointer) and an application that wants to think in records and versions.
@@ -8,22 +8,23 @@ Model
 -----
 - A *record* is any JSON-compatible value, stored under a string key.
 - All records live in a persistent (copy-on-write) compacted radix trie whose
-  nodes are chunks; the trie's root reference identifies one immutable,
-  self-consistent snapshot of the entire dataset.
+  nodes are each stored as one content-addressed blob; the trie's root
+  reference identifies one immutable, self-consistent snapshot of the entire
+  dataset.
 - Mutations are staged in memory and flushed by `commit()`, which produces a
   single new root reference. Readers pin a root and see a frozen snapshot.
 - Encodings are canonical (sorted keys, fixed separators), so equal content
-  yields byte-equal chunks and therefore an equal root: same dataset =>
+  yields byte-equal blobs and therefore an equal root: same dataset =>
   same root reference, regardless of insertion order or history.
 
 Layering
 --------
-  ChunkStore  : put(bytes) -> ref, get(ref) -> bytes      (Memory / Bee HTTP)
-  Trie        : canonical persistent radix trie over the chunk store
+  BytesStore  : put(bytes) -> ref, get(ref) -> bytes      (Memory / Bee HTTP)
+  Trie        : canonical persistent radix trie over the bytes store
   RecordStore : staging, commit, snapshots, prefix iteration
   Pointer     : mutable "latest root" (Memory / File; Swarm feed = follow-up)
 
-Nothing above this layer should ever see a chunk or a trie node.
+Nothing above this layer should ever see a stored blob or a trie node.
 """
 
 from __future__ import annotations
@@ -33,7 +34,7 @@ import hashlib
 import os
 from typing import Dict, Iterator, Optional, Protocol, Tuple
 
-Ref = str  # hex-encoded chunk reference
+Ref = str  # hex-encoded reference to a stored blob
 
 _SCHEMA_VERSION = 1
 _TOMBSTONE = object()
@@ -67,37 +68,37 @@ def _decode_value(data: bytes):
 
 
 # ---------------------------------------------------------------------------
-# Chunk store backends
+# Bytes store backends
 # ---------------------------------------------------------------------------
 
-class ChunkStore(Protocol):
+class BytesStore(Protocol):
     def put(self, data: bytes) -> Ref: ...
     def get(self, ref: Ref) -> bytes: ...
 
 
-class MemoryChunkStore:
+class MemoryBytesStore:
     """In-memory content-addressed store; the test double for Swarm."""
 
     def __init__(self):
-        self.chunks: Dict[Ref, bytes] = {}
+        self.blobs: Dict[Ref, bytes] = {}
 
     def put(self, data: bytes) -> Ref:
         ref = hashlib.sha256(data).hexdigest()
-        self.chunks[ref] = data
+        self.blobs[ref] = data
         return ref
 
     def get(self, ref: Ref) -> bytes:
         try:
-            return self.chunks[ref]
+            return self.blobs[ref]
         except KeyError:
-            raise KeyError(f"chunk not found: {ref}") from None
+            raise KeyError(f"reference not found: {ref}") from None
 
     def __len__(self):
-        return len(self.chunks)
+        return len(self.blobs)
 
 
 class BeeBytesStore:
-    """ChunkStore over a Bee node's `/bytes` endpoint.
+    """BytesStore over a Bee node's `/bytes` endpoint.
 
     Named for the endpoint it actually uses: `/bytes` is Bee's blob-level
     API, not the raw `/chunks/{address}` single-chunk primitive. Values of
@@ -131,7 +132,7 @@ class BeeBytesStore:
     def get(self, ref: Ref) -> bytes:
         r = self._requests.get(f"{self.api_url}/bytes/{ref}", timeout=120)
         if r.status_code == 404:
-            raise KeyError(f"chunk not found: {ref}")
+            raise KeyError(f"reference not found: {ref}")
         r.raise_for_status()
         return r.content
 
@@ -158,8 +159,8 @@ class _Node:
 
 
 class _Trie:
-    def __init__(self, chunks: ChunkStore):
-        self._chunks = chunks
+    def __init__(self, bytes_store: BytesStore):
+        self._blobs = bytes_store
         self._cache: Dict[Ref, _Node] = {}  # nodes are immutable => safe
 
     # -- node io -----------------------------------------------------------
@@ -167,7 +168,7 @@ class _Trie:
     def _load(self, ref: Ref) -> _Node:
         node = self._cache.get(ref)
         if node is None:
-            obj = json.loads(self._chunks.get(ref).decode("utf-8"))
+            obj = json.loads(self._blobs.get(ref).decode("utf-8"))
             if obj.get("tn") != 1:
                 raise ValueError("not a trie node or unsupported version")
             node = _Node(
@@ -185,7 +186,7 @@ class _Trie:
             "v": node.value_ref,
             "c": {format(b, "02x"): r for b, r in sorted(node.children.items())},
         })
-        ref = self._chunks.put(data)
+        ref = self._blobs.put(data)
         self._cache[ref] = node
         return ref
 
@@ -389,18 +390,18 @@ class SwarmFeedPointer:
 # ---------------------------------------------------------------------------
 
 class RecordStore:
-    """Staged, versioned key->record store over a ChunkStore.
+    """Staged, versioned key->record store over a BytesStore.
 
     Reads are read-your-writes (staged changes shadow the committed trie).
     `commit()` flushes staged changes and returns the new root reference;
-    `RecordStore.at(root, chunks)` opens a read-only snapshot of any root.
+    `RecordStore.at(root, bytes_store)` opens a read-only snapshot of any root.
     Returned records are deep copies: mutating them never mutates the store.
     """
 
-    def __init__(self, chunks: ChunkStore, root: Optional[Ref] = None,
+    def __init__(self, bytes_store: BytesStore, root: Optional[Ref] = None,
                  pointer: Optional[Pointer] = None, _readonly: bool = False):
-        self._chunks = chunks
-        self._trie = _Trie(chunks)
+        self._blobs = bytes_store
+        self._trie = _Trie(bytes_store)
         self._root = pointer.get() if (pointer and root is None) else root
         self._pointer = pointer
         self._staged: Dict[str, object] = {}
@@ -409,8 +410,8 @@ class RecordStore:
     # -- snapshots -----------------------------------------------------------
 
     @classmethod
-    def at(cls, root: Optional[Ref], chunks: ChunkStore) -> "RecordStore":
-        return cls(chunks, root=root, _readonly=True)
+    def at(cls, root: Optional[Ref], bytes_store: BytesStore) -> "RecordStore":
+        return cls(bytes_store, root=root, _readonly=True)
 
     @property
     def root(self) -> Optional[Ref]:
@@ -435,7 +436,7 @@ class RecordStore:
         vref = self._trie.get(self._root, kb)
         if vref is None:
             raise KeyError(key)
-        return _decode_value(self._chunks.get(vref))
+        return _decode_value(self._blobs.get(vref))
 
     def contains(self, key: str) -> bool:
         try:
@@ -480,7 +481,7 @@ class RecordStore:
     def commit(self) -> Optional[Ref]:
         """Flush staged changes; return the new root and update the pointer.
 
-        The root/pointer changes only after every chunk write has succeeded,
+        The root/pointer changes only after every blob write has succeeded,
         so a reader following the pointer sees all of a commit or none of it.
         """
         if self._readonly:
@@ -495,7 +496,7 @@ class RecordStore:
                 except KeyError:
                     pass  # deleted a key that never existed in the trie
             else:
-                vref = self._chunks.put(_encode_value(staged))
+                vref = self._blobs.put(_encode_value(staged))
                 root = self._trie.insert(root, kb, vref)
         self._staged.clear()
         self._root = root
