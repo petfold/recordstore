@@ -540,6 +540,29 @@ class TestReconcilingCommit(unittest.TestCase):
         w2.commit()   # overwrites: w1's change to a is lost from latest
         self.assertEqual(self._final(), {"a": 1, "b": 20})
 
+    def test_many_writers_converge(self):
+        # N>2 writers converge by cascading pairwise merges through the pointer.
+        self._seed({"base": 0})
+        writers = [RecordStore(self.store, pointer=self.ptr) for _ in range(5)]
+        for i, w in enumerate(writers):
+            w.put(f"w{i}", i)          # disjoint keys
+        for w in writers:
+            w.commit(reconcile=True)   # each folds in whatever landed before it
+        self.assertEqual(self._final(),
+                         {"base": 0, "w0": 0, "w1": 1, "w2": 2, "w3": 3, "w4": 4})
+
+    def test_many_writers_conflict_with_commutative_resolver(self):
+        # same key, three writers; an associative+commutative resolver (max)
+        # makes the outcome independent of commit order.
+        self._seed({"k": 0})
+        vals = [5, 9, 3]
+        writers = [RecordStore(self.store, pointer=self.ptr) for _ in vals]
+        for w, v in zip(writers, vals):
+            w.put("k", v)
+        for w in writers:
+            w.commit(reconcile=True, resolver=lambda key, b, o, t: max(o, t))
+        self.assertEqual(self._final(), {"k": 9})
+
     def test_reconcile_single_writer_unaffected(self):
         self._seed({"a": 1})
         w = RecordStore(self.store, pointer=self.ptr)
