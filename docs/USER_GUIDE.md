@@ -504,6 +504,10 @@ comparing roots see “no change.”
 
 ## 7. Limitations and roadmap
 
+The near-term limitations and their incremental fixes are below. Larger,
+multi-release bets (e.g. the canonical-POT convergence track) live in the
+[repo roadmap](../ROADMAP.md).
+
 - **Concurrency control is opt-in, and best-effort across a network.**
   `commit(reconcile=True)` (§5) makes concurrent writers converge — three-way
   merge and retry when the pointer moved under it — while plain `commit()` still
