@@ -4,6 +4,20 @@ All notable changes to this project are documented here. The format is based on
 [Keep a Changelog](https://keepachangelog.com/), and this project adheres to
 [Semantic Versioning](https://semver.org/).
 
+## [0.11.0] — 2026-07-24
+
+### Added
+
+- **`BeeBytesStore(postage_batch_id="auto")`** — the batch id now
+  defaults to `"auto"`, which selects the node's usable batch with the
+  longest remaining validity via swarmfs's `StampManager` (a lazy,
+  optional import in the spirit of the `requests` boundary; passing an
+  explicit id keeps recordstore swarmfs-free). Selection only, never
+  purchase: spending the node wallet's xBZZ stays a deliberate caller
+  action — swarmfs's `StampManager.plan`/`buy` is the programmatic way
+  to buy, documented in the User Guide. Verified live: `"auto"` picked
+  the freshest batch on a real node and round-tripped a blob.
+
 ## [0.10.0] — 2026-07-20
 
 ### Added

@@ -137,6 +137,35 @@ class MemoryBytesStore:
         return len(self.blobs)
 
 
+def _auto_batch(api_url: str) -> str:
+    """Resolve 'auto' to a validated usable batch id via swarmfs's
+    StampManager (an optional dependency, imported lazily like requests).
+
+    Selection only, never purchase: a library must not spend the node
+    wallet's xBZZ on its own. To buy programmatically use swarmfs
+    (``StampManager.plan``/``buy``) and pass the resulting id here.
+    """
+    try:
+        from swarmfs._client import SwarmClient
+        from swarmfs.stamps import StampManager
+    except ImportError:
+        raise ImportError(
+            "postage_batch_id='auto' needs swarmfs for stamp selection — "
+            "install it (pip install -e path/to/swarmfs) or pass an "
+            "explicit batch id (see GET /stamps on your node)"
+        ) from None
+    import asyncio
+
+    async def resolve() -> str:
+        client = SwarmClient(api_url)
+        try:
+            return await StampManager(client).resolve("auto")
+        finally:
+            await client.close()
+
+    return asyncio.run(resolve())
+
+
 class BeeBytesStore:
     """BytesStore over a Bee node's `/bytes` endpoint.
 
@@ -144,13 +173,17 @@ class BeeBytesStore:
     API, not the raw `/chunks/{address}` single-chunk primitive. Values of
     any length are handled transparently — Bee's splitter turns the payload
     into a chunk tree server-side and returns one reference. Requires a
-    usable postage batch id for writes.
+    usable postage batch id for writes; ``"auto"`` picks one via swarmfs
+    (validated, longest TTL — see ``_auto_batch``; selection only, buying
+    is deliberately left to the caller).
     """
 
-    def __init__(self, api_url: str, postage_batch_id: str,
+    def __init__(self, api_url: str, postage_batch_id: str = "auto",
                  deferred_upload: bool = True, max_concurrent_reads: int = 16):
         import requests  # lazy: only needed for the real backend
         self.api_url = api_url.rstrip("/")
+        if postage_batch_id in (None, "auto"):
+            postage_batch_id = _auto_batch(self.api_url)
         self.batch = postage_batch_id
         self.deferred = deferred_upload
         self.max_concurrent_reads = max(1, max_concurrent_reads)

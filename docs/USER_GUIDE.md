@@ -294,7 +294,7 @@ be a stable hex string determined by the content.
 A dict keyed by SHA-256. Use it for tests and ephemeral work; `len(store)`
 gives the blob count. Data lives only as long as the object.
 
-### `BeeBytesStore(api_url, postage_batch_id, deferred_upload=True, max_concurrent_reads=16)`
+### `BeeBytesStore(api_url, postage_batch_id="auto", deferred_upload=True, max_concurrent_reads=16)`
 
 A real [Swarm Bee](https://docs.ethswarm.org/) node over its HTTP API
 (`POST`/`GET /bytes`) — named for that endpoint specifically: `/bytes` is
@@ -304,10 +304,17 @@ references. Requirements and behavior:
 
 - **`requests`** is imported lazily inside the constructor — install the
   `[bee]` extra.
-- **A usable postage batch id is required for writes.** Against a real
-  (mainnet) node, always purchase a batch yourself and pass its id;
-  batches below ~1 day of validity are rejected by the network, and a
-  fresh purchase takes on the order of a minute to become usable.
+- **A usable postage batch is required for writes.** The default
+  `postage_batch_id="auto"` picks the node's usable batch with the
+  longest remaining validity, via [swarmfs](https://github.com/petfold/swarmfs)
+  (imported lazily; install it for `"auto"`, or pass an explicit batch
+  id and recordstore stays swarmfs-free). Selection only, never
+  purchase — a library must not spend the node wallet's xBZZ on its
+  own. To buy programmatically, use swarmfs's
+  `StampManager.plan(size, ttl)`/`buy(amount, depth)` and pass the
+  returned id; batches below ~1 day of validity are rejected by the
+  network, and a fresh purchase takes on the order of a minute to
+  become usable.
 - `deferred_upload=True` (default) returns as soon as the node has the
   data locally, with push-sync to the network happening in the background;
   `False` waits. Check network retrievability with Bee's
@@ -329,7 +336,7 @@ A quick smoke against a local node:
 ```python
 from recordstore import RecordStore, BeeBytesStore
 
-blobs = BeeBytesStore("http://localhost:1633", "<batch-id>")
+blobs = BeeBytesStore("http://localhost:1633")  # "auto": picks a usable batch
 store = RecordStore(blobs)
 store.put("hello", {"world": True})
 root = store.commit()
