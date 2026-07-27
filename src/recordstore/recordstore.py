@@ -22,7 +22,11 @@ Layering
   BytesStore  : put(bytes) -> ref, get(ref) -> bytes      (Memory / Bee HTTP)
   Trie        : canonical persistent radix trie over the bytes store
   RecordStore : staging, commit, snapshots, prefix iteration
-  Pointer     : mutable "latest root" (Memory / File; Swarm feed = follow-up)
+  Pointer     : mutable "latest root" (Memory / File / Swarm feed)
+
+`swarm_store(topic, ...)` is the one call that puts a whole store on Swarm:
+blobs in a Bee node, latest-root in a Swarm feed. Everything above stays
+backend-neutral.
 
 Nothing above this layer should ever see a stored blob or a trie node.
 """
@@ -900,6 +904,60 @@ class SwarmFeedPointer:
 # ---------------------------------------------------------------------------
 # RecordStore
 # ---------------------------------------------------------------------------
+
+def swarm_store(
+    topic: str,
+    *,
+    api_url: str = "http://localhost:1633",
+    stamp: str = "auto",
+    signer: Optional[str] = None,
+    owner: Optional[str] = None,
+    feed_ttl: float = 15.0,
+    deferred_upload: bool = True,
+    max_concurrent_reads: int = 16,
+) -> "RecordStore":
+    """A `RecordStore` that lives entirely on Ethereum Swarm.
+
+    This is the one place in the stack where Swarm is chosen: blobs go to a
+    Bee node (`BeeBytesStore`) and the mutable "latest root" is a Swarm feed
+    (`SwarmFeedPointer`), so a published store has a *stable address* rather
+    than a root hash you have to pass around by hand. Everything above —
+    `RecordStore` itself and its consumers — stays backend-neutral.
+
+        store = swarm_store("my-notes", signer=key)   # publish your own
+        store = swarm_store("my-notes", owner=addr)   # follow someone else's
+
+    Pass `signer` (32-byte secp256k1 private key, hex) to read *and* write;
+    the owner address is derived from it. Pass `owner` instead for a
+    read-only view of somebody else's feed. Writes need a postage batch:
+    `stamp="auto"` picks a usable one (see `_auto_batch`).
+
+    Needs the `bee` and `feeds` extras:
+    `pip install "recordstore[bee,feeds]"`.
+    """
+    if signer is None and owner is None:
+        raise ValueError(
+            "swarm_store needs either signer=<private key hex> (to publish) "
+            "or owner=<address hex> (to follow someone else's feed)"
+        )
+    blobs = BeeBytesStore(
+        api_url,
+        stamp,
+        deferred_upload=deferred_upload,
+        max_concurrent_reads=max_concurrent_reads,
+    )
+    pointer = SwarmFeedPointer(
+        api_url,
+        topic,
+        signer=signer,
+        owner=owner,
+        # the batch was already resolved (possibly from "auto") by the store,
+        # so the feed's SOC writes and the blob writes share one batch
+        postage_batch_id=blobs.batch,
+        feed_ttl=feed_ttl,
+    )
+    return RecordStore(blobs, pointer=pointer)
+
 
 class RecordStore:
     """Staged, versioned key->record store over a BytesStore.
