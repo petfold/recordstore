@@ -1174,6 +1174,13 @@ class RecordStore:
         """Root of the last committed state (staged changes not included)."""
         return self._root
 
+    @property
+    def blobs(self) -> BytesStore:
+        """The underlying bytes store — so a caller holding one store can open
+        *another* root over the same blobs (`RecordStore.at(other, s.blobs)`)
+        without having kept a separate reference to the backend."""
+        return self._blobs
+
     # -- record operations -----------------------------------------------------
 
     @staticmethod

@@ -4,6 +4,16 @@ All notable changes to this project are documented here. The format is based on
 [Keep a Changelog](https://keepachangelog.com/), and this project adheres to
 [Semantic Versioning](https://semver.org/).
 
+## [0.13.1] — 2026-07-28
+
+### Added
+
+- **`RecordStore.blobs`** — public accessor for the underlying bytes store, so
+  a caller holding one store can open *another* root over the same backend
+  (`RecordStore.at(other_root, store.blobs)`) without having kept a separate
+  reference to it. Needed by OntoDAG's `merge_published`, which opens a
+  published root over the blobs it already has.
+
 ## [0.13.0] — 2026-07-28
 
 ### Added
