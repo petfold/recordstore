@@ -400,6 +400,44 @@ extras: `pip install "recordstore[bee,feeds]"`. Everything above `RecordStore`
 stays backend-neutral — this factory is the single answer to "where is Swarm
 specified?".
 
+### Durable blobs without Swarm
+
+`MemoryBytesStore` is ephemeral and `BeeBytesStore` needs a node, so two
+backends cover the middle ground:
+
+```python
+from recordstore import RecordStore, DirBytesStore, FilePointer, FsspecBytesStore
+
+# a versioned store entirely on local disk
+store = RecordStore(DirBytesStore("~/.myapp/blobs"),
+                    pointer=FilePointer("~/.myapp/root"))
+
+# or on any fsspec filesystem
+store = RecordStore(FsspecBytesStore("s3://bucket/blobs"))
+```
+
+- **`DirBytesStore(path, addressing="sha256")`** — the file name *is* the
+  reference. Writes go to a temp file and are `os.replace`d into place, so a
+  crash never leaves a torn blob; re-putting existing content is a no-op; names
+  fan out two hex characters deep (`ab/cdef…`) so a million blobs do not land in
+  one directory.
+- **`FsspecBytesStore(url, addressing="sha256", **storage_options)`** — same
+  contract over local paths, S3, GCS, Azure, HTTP, SFTP or `memory://`. Needs
+  the `[fsspec]` extra. It **refuses `bzz://`**: fsspec is path-addressed, but a
+  Swarm reference is produced *by* the write, so aiming it at Swarm would throw
+  that addressing away — use `BeeBytesStore` or `swarm_store` for Swarm.
+
+**Addressing.** Both default to `"sha256"`, which matches `MemoryBytesStore`, so
+a dataset has the *same root* in memory and on disk — that is what makes the
+backends interchangeable. Pass `addressing="swarm"` to name blobs by their Swarm
+reference instead (computed locally by `swarmfs.splitter`, no node needed): the
+directory then shares Swarm's address space, so you can build offline and
+publish later with nothing re-addressed. Note that roots are **not** comparable
+across the two schemes, and that a Bee node adding erasure coding returns a
+different root for the same bytes, so an offline mirror stays address-compatible
+only if you upload with redundancy disabled. Any `bytes -> str` callable also
+works.
+
 - **`MemoryPointer(root=None)`** — in-process only; implements an atomic
   `compare_and_set`, so `commit(reconcile=True)` is race-free in-process.
 - **`FilePointer(path)`** — one root in a local file; `set` writes a temp

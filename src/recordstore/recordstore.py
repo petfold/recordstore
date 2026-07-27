@@ -141,6 +141,192 @@ class MemoryBytesStore:
         return len(self.blobs)
 
 
+def _sha256_ref(data: bytes) -> Ref:
+    return hashlib.sha256(data).hexdigest()
+
+
+def _swarm_ref(data: bytes) -> Ref:
+    """Swarm's own reference for `data`, computed locally via swarmfs.
+
+    Choosing this makes a local store share Swarm's address space, so the same
+    dataset has the *same* root whether it lives in a directory or on Swarm —
+    develop offline, publish later, nothing re-addressed. It costs a dependency
+    (`swarmfs[feeds]`, for keccak256) and is slower than sha256, since it
+    builds the whole chunk tree.
+
+    Caveat inherited from Swarm: this is the reference for a *plain* upload.
+    A Bee node that adds erasure coding (many default to it) returns a
+    different root for the same bytes, so an offline mirror only stays
+    address-compatible if you upload with redundancy disabled.
+    """
+    try:
+        from swarmfs.splitter import content_address
+    except ImportError:
+        raise ImportError(
+            "addressing='swarm' needs swarmfs with keccak256: "
+            'pip install "swarmfs[feeds]"'
+        ) from None
+    return content_address(data).hex()
+
+
+_ADDRESSING = {"sha256": _sha256_ref, "swarm": _swarm_ref}
+
+
+def _resolve_addressing(addressing):
+    """`'sha256'`, `'swarm'`, or any `bytes -> str` callable."""
+    if callable(addressing):
+        return addressing
+    try:
+        return _ADDRESSING[addressing]
+    except KeyError:
+        raise ValueError(
+            f"unknown addressing {addressing!r}; use "
+            f"{sorted(_ADDRESSING)} or a bytes->str callable"
+        ) from None
+
+
+class DirBytesStore:
+    """Durable content-addressed blobs in a local directory.
+
+    The gap this fills: `MemoryBytesStore` forgets everything on exit and
+    `BeeBytesStore` needs a node and a postage batch, so there was no way to
+    keep a versioned store on ordinary disk. Here the file *name* is the
+    reference, which is all content addressing needs.
+
+    ```python
+    store = RecordStore(DirBytesStore("~/.myapp/blobs"),
+                        pointer=FilePointer("~/.myapp/root"))
+    ```
+
+    - **Addressing** is `"sha256"` by default (matching `MemoryBytesStore`, so
+      roots are portable between the two). Pass `addressing="swarm"` to name
+      blobs by their Swarm reference instead, making the directory an offline
+      mirror of Swarm's address space — see `_swarm_ref` for the trade-off.
+    - **Writes are atomic and idempotent**: content goes to a temp file that is
+      `os.replace`d into place, so a crash never leaves a torn blob, and
+      re-putting existing content skips the write entirely.
+    - **Names are fanned out** two hex characters deep (`ab/cdef…`), so a store
+      with a million blobs does not become one unlistable directory.
+    """
+
+    def __init__(self, path: str, addressing="sha256"):
+        self.path = os.path.abspath(os.path.expanduser(path))
+        self._ref_of = _resolve_addressing(addressing)
+        os.makedirs(self.path, exist_ok=True)
+
+    def _blob_path(self, ref: Ref) -> str:
+        return os.path.join(self.path, ref[:2], ref[2:])
+
+    def put(self, data: bytes) -> Ref:
+        ref = self._ref_of(data)
+        target = self._blob_path(ref)
+        if os.path.exists(target):
+            return ref                      # content-addressed: already correct
+        os.makedirs(os.path.dirname(target), exist_ok=True)
+        tmp = target + f".tmp{os.getpid()}"
+        with open(tmp, "wb") as fh:
+            fh.write(data)
+        os.replace(tmp, target)
+        return ref
+
+    def get(self, ref: Ref) -> bytes:
+        try:
+            with open(self._blob_path(ref), "rb") as fh:
+                return fh.read()
+        except FileNotFoundError:
+            raise KeyError(f"reference not found: {ref}") from None
+
+    def get_many(self, refs: Iterable[Ref]) -> Dict[Ref, bytes]:
+        return {ref: self.get(ref) for ref in refs}
+
+    def put_many(self, datas: Iterable[bytes]) -> List[Ref]:
+        return [self.put(d) for d in datas]
+
+    def __len__(self):
+        return sum(len(files) for _, _, files in os.walk(self.path))
+
+
+class FsspecBytesStore:
+    """Content-addressed blobs on any [fsspec](https://filesystem-spec.readthedocs.io)
+    filesystem: a local directory, S3, GCS, Azure, HTTP, SFTP, memory…
+
+    ```python
+    store = RecordStore(FsspecBytesStore("s3://my-bucket/blobs"))
+    ```
+
+    **Not for `bzz://`.** fsspec is *path*-addressed — you choose the key — while
+    Swarm is *content*-addressed: the reference is the result of the write, not
+    an input to it. Pointing this at Swarm would store blobs at
+    `bzz://…/<sha256>` paths inside a manifest, discarding Swarm's own
+    addressing. Use `BeeBytesStore` (or `swarm_store`) instead; this class
+    refuses the protocol rather than silently doing the wrong thing.
+
+    Addressing and the fan-out layout match `DirBytesStore`.
+    """
+
+    def __init__(self, url: str, addressing="sha256", **storage_options):
+        try:
+            import fsspec
+        except ImportError:
+            raise ImportError(
+                'FsspecBytesStore needs fsspec: pip install "recordstore[fsspec]"'
+            ) from None
+        protocol = url.split("://", 1)[0] if "://" in url else "file"
+        if protocol in ("bzz", "bzzf"):
+            raise ValueError(
+                "FsspecBytesStore cannot address Swarm: fsspec is path-addressed, "
+                "but a Swarm reference is produced *by* the write. Use "
+                "BeeBytesStore(api_url, batch) — or swarm_store(topic, ...) for a "
+                "whole store on Swarm — instead."
+            )
+        self.fs, self.base = fsspec.core.url_to_fs(url, **storage_options)
+        self._ref_of = _resolve_addressing(addressing)
+        self.fs.makedirs(self.base, exist_ok=True)
+
+    def _blob_path(self, ref: Ref) -> str:
+        return f"{self.base.rstrip('/')}/{ref[:2]}/{ref[2:]}"
+
+    def put(self, data: bytes) -> Ref:
+        ref = self._ref_of(data)
+        target = self._blob_path(ref)
+        if self.fs.exists(target):
+            return ref
+        parent = target.rsplit("/", 1)[0]
+        self.fs.makedirs(parent, exist_ok=True)
+        with self.fs.open(target, "wb") as fh:
+            fh.write(data)
+        return ref
+
+    def get(self, ref: Ref) -> bytes:
+        try:
+            return self.fs.cat_file(self._blob_path(ref))
+        except FileNotFoundError:
+            raise KeyError(f"reference not found: {ref}") from None
+
+    def get_many(self, refs: Iterable[Ref]) -> Dict[Ref, bytes]:
+        refs = list(refs)
+        if not refs:
+            return {}
+        paths = {self._blob_path(r): r for r in refs}
+        # fsspec's cat() fetches many paths concurrently where the backend can
+        got = self.fs.cat(list(paths))
+        if isinstance(got, bytes):          # single-path calls return raw bytes
+            got = {next(iter(paths)): got}
+        out = {}
+        for path, data in got.items():
+            key = paths.get(path) or paths.get("/" + path.lstrip("/"))
+            if key is None:                 # backends may normalise differently
+                key = paths[next(p for p in paths if p.endswith(path.split("/")[-1]))]
+            out[key] = data
+        missing = set(refs) - set(out)
+        if missing:
+            raise KeyError(f"reference not found: {sorted(missing)[0]}")
+        return out
+
+    def put_many(self, datas: Iterable[bytes]) -> List[Ref]:
+        return [self.put(d) for d in datas]
+
+
 def _auto_batch(api_url: str) -> str:
     """Resolve 'auto' to a validated usable batch id via swarmfs's
     StampManager (an optional dependency, imported lazily like requests).

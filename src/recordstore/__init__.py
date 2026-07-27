@@ -1,6 +1,8 @@
 from .recordstore import (
     RecordStore,
     MemoryBytesStore,
+    DirBytesStore,
+    FsspecBytesStore,
     BeeBytesStore,
     MemoryPointer,
     FilePointer,
@@ -15,6 +17,8 @@ from .recordstore import (
 __all__ = [
     "RecordStore",
     "MemoryBytesStore",
+    "DirBytesStore",
+    "FsspecBytesStore",
     "BeeBytesStore",
     "MemoryPointer",
     "FilePointer",

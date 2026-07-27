@@ -92,7 +92,7 @@ dependencies are imported lazily — `requests` only by `BeeBytesStore`
 
 | Layer | What it does | Implementations |
 |---|---|---|
-| `BytesStore` | `put(bytes) → ref`, `get(ref) → bytes` | `MemoryBytesStore` (in-memory, testing), `BeeBytesStore` (Swarm Bee node over `/bytes` — the blob endpoint, not the raw `/chunks/{address}` primitive) |
+| `BytesStore` | `put(bytes) → ref`, `get(ref) → bytes` | `MemoryBytesStore` (in-memory, testing), `DirBytesStore` (durable local directory), `FsspecBytesStore` (S3/GCS/HTTP/… via fsspec), `BeeBytesStore` (Swarm Bee node over `/bytes` — the blob endpoint, not the raw `/chunks/{address}` primitive) |
 | trie (internal) | canonical persistent radix trie mapping keys to value blobs | — |
 | `RecordStore` | staging, `commit()` / `commit(reconcile=True)`, snapshots, sorted `keys()`/`items()`, three-way `merge()` | — |
 | `Pointer` | mutable name for the latest root | `MemoryPointer`, `FilePointer` (atomic local file), `SwarmFeedPointer` (owner-signed Swarm feed, over `swarm-bee`) |

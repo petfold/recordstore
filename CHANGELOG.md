@@ -4,6 +4,29 @@ All notable changes to this project are documented here. The format is based on
 [Keep a Changelog](https://keepachangelog.com/), and this project adheres to
 [Semantic Versioning](https://semver.org/).
 
+## [0.13.0] — 2026-07-28
+
+### Added
+
+- **`DirBytesStore(path, addressing="sha256")`** — durable content-addressed
+  blobs in a local directory, closing a real gap: `MemoryBytesStore` forgets
+  everything on exit and `BeeBytesStore` needs a node and a postage batch, so
+  there was previously no way to keep a versioned store on ordinary disk
+  (`FilePointer` persists only the *root reference*, not the blobs). Writes are
+  atomic (temp file + `os.replace`) and idempotent; names fan out two hex
+  characters deep so a large store stays listable.
+- **`FsspecBytesStore(url, addressing="sha256")`** — the same contract over any
+  fsspec filesystem (local, S3, GCS, Azure, HTTP, SFTP, `memory://`). It
+  **refuses `bzz://`/`bzzf://` explicitly**: fsspec is path-addressed while a
+  Swarm reference is produced *by* the write, so pointing it at Swarm would
+  store blobs at `<sha256>` paths and discard Swarm's own addressing — use
+  `BeeBytesStore` or `swarm_store` instead. Needs the new `[fsspec]` extra.
+- **Pluggable addressing** on both: `"sha256"` (default — roots stay portable
+  with `MemoryBytesStore`), `"swarm"` (name blobs by their Swarm reference,
+  computed locally via `swarmfs.splitter`, making a directory an offline mirror
+  of Swarm's address space — new `[swarm-addressing]` extra), or any
+  `bytes -> str` callable.
+
 ## [0.12.1] — 2026-07-28
 
 ### Fixed
