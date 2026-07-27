@@ -376,6 +376,30 @@ store.put("k", 1)
 store.commit()                                  # pointer now names the new root
 ```
 
+### The whole store on Swarm, in one call
+
+Assembling the two Swarm pieces by hand is easy to get subtly wrong — the
+obvious wiring, `RecordStore(BeeBytesStore(...), FilePointer(...))`, puts the
+blobs on Swarm but leaves the *latest-root pointer* on local disk, so nothing
+is publishable. `swarm_store` does both halves:
+
+```python
+from recordstore import swarm_store
+
+store = swarm_store("my-notes", signer=key)          # read + write
+store = swarm_store("my-notes", owner=address)       # read someone else's
+store = swarm_store("my-notes", signer=key,
+                    api_url="http://node:1633",
+                    stamp="<batch id>")              # defaults: localhost, "auto"
+```
+
+Blobs go to `BeeBytesStore`, the latest root to a `SwarmFeedPointer`, and the
+postage batch is resolved once (possibly from `"auto"`) and shared, so the
+feed's SOC writes and the blob writes are paid from the same batch. Needs both
+extras: `pip install "recordstore[bee,feeds]"`. Everything above `RecordStore`
+stays backend-neutral — this factory is the single answer to "where is Swarm
+specified?".
+
 - **`MemoryPointer(root=None)`** — in-process only; implements an atomic
   `compare_and_set`, so `commit(reconcile=True)` is race-free in-process.
 - **`FilePointer(path)`** — one root in a local file; `set` writes a temp

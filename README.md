@@ -97,7 +97,17 @@ dependencies are imported lazily — `requests` only by `BeeBytesStore`
 | `RecordStore` | staging, `commit()` / `commit(reconcile=True)`, snapshots, sorted `keys()`/`items()`, three-way `merge()` | — |
 | `Pointer` | mutable name for the latest root | `MemoryPointer`, `FilePointer` (atomic local file), `SwarmFeedPointer` (owner-signed Swarm feed, over `swarm-bee`) |
 
-Nothing above `RecordStore` ever sees a stored blob or a trie node.
+| `swarm_store(topic, ...)` | assembles the two Swarm pieces into a store | the one place Swarm is chosen: `BeeBytesStore` blobs **and** a `SwarmFeedPointer` head |
+
+Nothing above `RecordStore` ever sees a stored blob or a trie node — and
+nothing below it needs to know Swarm exists unless you asked for it:
+
+```python
+from recordstore import swarm_store
+
+store = swarm_store("my-notes", signer=key)   # publish: blobs + feed on Swarm
+store = swarm_store("my-notes", owner=addr)   # follow someone else's feed
+```
 
 ## Documentation
 
