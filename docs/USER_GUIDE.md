@@ -10,8 +10,9 @@ Everything documented here is importable from the top-level package:
 ```python
 from recordstore import (
     RecordStore,
-    MemoryBytesStore, BeeBytesStore,
+    MemoryBytesStore, DirBytesStore, FsspecBytesStore, BeeBytesStore,
     MemoryPointer, FilePointer, SwarmFeedPointer,
+    swarm_store,
     canonical_bytes,
 )
 ```
