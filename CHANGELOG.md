@@ -4,6 +4,21 @@ All notable changes to this project are documented here. The format is based on
 [Keep a Changelog](https://keepachangelog.com/), and this project adheres to
 [Semantic Versioning](https://semver.org/).
 
+## [0.12.0] — 2026-07-25
+
+### Added
+
+- **`swarm_store(topic, *, signer=... | owner=...)`** — the one call that puts a
+  whole store on Swarm: blobs in a Bee node (`BeeBytesStore`) *and* the mutable
+  latest-root in a Swarm feed (`SwarmFeedPointer`), so a published store has a
+  stable address instead of a root hash passed around by hand. Previously
+  callers assembled the two themselves, and the obvious wiring
+  (`RecordStore(BeeBytesStore(...), FilePointer(...))`) left the head on local
+  disk while only the blobs went to Swarm. The postage batch is resolved once
+  by the blob store and shared with the feed's SOC writes. Everything above
+  `RecordStore` stays backend-neutral; this is the single greppable answer to
+  "where is Swarm specified?".
+
 ## [0.11.0] — 2026-07-24
 
 ### Added
