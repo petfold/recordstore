@@ -4,6 +4,15 @@ All notable changes to this project are documented here. The format is based on
 [Keep a Changelog](https://keepachangelog.com/), and this project adheres to
 [Semantic Versioning](https://semver.org/).
 
+## [0.12.1] — 2026-07-28
+
+### Fixed
+
+- **The PyPI project page was blank.** `pyproject.toml` never declared
+  `readme`, so the published metadata carried no long description at all —
+  every release so far rendered an empty page. Now `readme = "README.md"`,
+  matching its sibling packages.
+
 ## [0.12.0] — 2026-07-25
 
 ### Added
