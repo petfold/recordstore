@@ -15,6 +15,7 @@ bee = ["requests"]
 fsspec = ["fsspec"]
 swarm-addressing = ["swarmfs[feeds]"]
 feeds = ["swarm-bee"]
+test = ["pytest"]
 
 [tool.setuptools.packages.find]
 where = ["src"]

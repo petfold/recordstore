@@ -1,5 +1,9 @@
 # recordstore
 
+[![tests](https://github.com/petfold/recordstore/actions/workflows/tests.yml/badge.svg)](https://github.com/petfold/recordstore/actions/workflows/tests.yml)
+[![PyPI](https://img.shields.io/pypi/v/recordstore)](https://pypi.org/project/recordstore/)
+[![license](https://img.shields.io/badge/license-BSD--3--Clause-blue)](LICENSE)
+
 A versioned key→record store over a content-addressed bytes store — a thin
 database kernel between an immutable blob store (such as [Ethereum
 Swarm](https://www.ethswarm.org/)) and an application that wants to think in
