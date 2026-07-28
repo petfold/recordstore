@@ -1,4 +1,4 @@
-name: Release to PyPI
+name: Publish to PyPI
 
 # Token-less publishing via PyPI Trusted Publishers: PyPI trusts this
 # exact repo+workflow (configured at pypi.org/manage/account/publishing/),
@@ -15,8 +15,8 @@ jobs:
   build:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v6
         with:
           python-version: "3.12"
       - run: pip install -e ".[test]"
