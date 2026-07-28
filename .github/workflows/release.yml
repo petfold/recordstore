@@ -12,14 +12,34 @@ on:
   workflow_dispatch:
 
 jobs:
-  publish:
+  build:
     runs-on: ubuntu-latest
-    permissions:
-      id-token: write # the OIDC handshake with PyPI
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
-      - run: pip install build && python -m build
+      - run: pip install -e ".[test]"
+      # A v* tag publishes irreversibly — PyPI never allows re-uploading a
+      # version, only yanking. Run the suite first so a tag cannot ship a red
+      # build. BEE_API is unset, so the live-node tests skip themselves.
+      - run: pytest
+      - run: pip install build twine
+      - run: python -m build
+      - run: twine check dist/*
+      - uses: actions/upload-artifact@v4
+        with:
+          name: dist
+          path: dist/
+
+  publish:
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      id-token: write # the OIDC handshake with PyPI
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: dist
+          path: dist/
       - uses: pypa/gh-action-pypi-publish@release/v1
