@@ -4,6 +4,15 @@ All notable changes to this project are documented here. The format is based on
 [Keep a Changelog](https://keepachangelog.com/), and this project adheres to
 [Semantic Versioning](https://semver.org/).
 
+## [0.13.2] — 2026-07-28
+
+### Changed
+
+- Metadata only, no code changes. `requires-python` is now `>=3.11` (it declared
+  `>=3.9`, which nothing tested), and `[project.urls]` is populated, so the PyPI
+  page links back to the repository and issues. Published 0.13.1 and earlier
+  carry the old metadata.
+
 ## [0.13.1] — 2026-07-28
 
 ### Added
