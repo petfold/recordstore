@@ -88,7 +88,7 @@ pip install "recordstore[bee]"
 pip install "recordstore[feeds]"
 ```
 
-Python ≥ 3.9. The core imports only the standard library; both extra
+Python ≥ 3.11. The core imports only the standard library; both extra
 dependencies are imported lazily — `requests` only by `BeeBytesStore`
 (`[bee]`), `swarm-bee` only by `SwarmFeedPointer` (`[feeds]`).
 
