@@ -4,6 +4,43 @@ All notable changes to this project are documented here. The format is based on
 [Keep a Changelog](https://keepachangelog.com/), and this project adheres to
 [Semantic Versioning](https://semver.org/).
 
+## [0.14.0] — 2026-07-29
+
+### Added
+
+- **Postage batch health, surfaced where it bites.** `"auto"` selection now
+  requires a day of remaining validity (`AUTO_MIN_BATCH_TTL`, per-store
+  `min_batch_ttl=`) instead of swarmfs's 60-second floor, which is written for
+  a one-shot upload: a batch with a minute left would have been selected and
+  everything written under it would have stopped being paid for a minute later.
+- **Two warnings on selection**, both silent failure modes until now: under a
+  week of validity left (renew — an expired batch cannot be revived, and the
+  chunks it paid for become the first eviction candidates), and a fullest
+  bucket ≥ 80% full on an immutable batch (dilute — further chunks hashing
+  there are refused even though the batch has capacity elsewhere).
+- **`batch_status(api_url, batch_id)` and `BeeBytesStore.batch_status()`** —
+  read-only batch health, `(StampInfo, BucketStats | None)`. `buckets=True`
+  fetches the node's exact per-bucket histogram (~2 MB) instead of the
+  summary. Cron it to learn that renewal is needed while renewal is still
+  possible.
+
+### Changed
+
+- **A 402 on write now says which 402 it is.** `BeeBytesStore` owns its
+  `requests` transport, so it does not inherit swarmfs's handling. `batch is
+  overissued` (a full bucket) now explains that nothing already stored is
+  lost and that diluting one depth then retrying fixes it; any other 402
+  points at the batch and notes that an expired one cannot be revived.
+  Previously both surfaced as a bare `402 Client Error`.
+- **`swarmfs >= 0.4.0`** for the optional stamp path, declared as a new
+  `[stamps]` extra (the inspection surface — `StampManager.list_batches`,
+  `.buckets`, `StampInfo.bucket_capacity` — does not exist earlier, and an
+  old swarmfs now fails with a version-specific message instead of an
+  `AttributeError`).
+
+Renewal itself is still deliberately absent: a library must not spend the node
+wallet's xBZZ on its own. recordstore reports; the caller decides.
+
 ## [0.13.2] — 2026-07-28
 
 ### Changed

@@ -308,14 +308,68 @@ references. Requirements and behavior:
 - **A usable postage batch is required for writes.** The default
   `postage_batch_id="auto"` picks the node's usable batch with the
   longest remaining validity, via [swarmfs](https://github.com/petfold/swarmfs)
-  (imported lazily; install it for `"auto"`, or pass an explicit batch
-  id and recordstore stays swarmfs-free). Selection only, never
-  purchase — a library must not spend the node wallet's xBZZ on its
-  own. To buy programmatically, use swarmfs's
-  `StampManager.plan(size, ttl)`/`buy(amount, depth)` and pass the
-  returned id; batches below ~1 day of validity are rejected by the
+  `>= 0.4.0` (imported lazily; `pip install 'recordstore[stamps]'` for
+  `"auto"`, or pass an explicit batch id and recordstore stays
+  swarmfs-free). Selection only, never purchase — a library must not
+  spend the node wallet's xBZZ on its own. To buy programmatically, use
+  swarmfs's `StampManager.plan(size, ttl)`/`buy(amount, depth)` and pass
+  the returned id; batches below ~1 day of validity are rejected by the
   network, and a fresh purchase takes on the order of a minute to
   become usable.
+- **A batch that is about to expire is not selected.** `"auto"` requires
+  a day of remaining validity (`AUTO_MIN_BATCH_TTL`, overridable per
+  store with `min_batch_ttl=`). swarmfs's own floor is 60 seconds, which
+  is right for a one-shot upload and wrong for a store meant to outlive
+  the process: a batch with a minute left would be chosen, and
+  everything written under it would stop being paid for a minute later.
+- **Two warnings you should act on**, both raised when a batch is
+  selected because both are otherwise silent until they bite:
+  - **under a week of validity left** — renew it. Your records live
+    exactly as long as the batch, and an expired batch cannot be
+    revived: the node drops it, a top-up against it fails, and the
+    chunks it paid for become the first candidates for eviction. Renewal
+    is additive, so topping up early costs nothing extra.
+  - **the fullest bucket is ≥ 80% full on an immutable batch** — dilute
+    it. Chunks land in 65 536 buckets by their address; when one fills,
+    further chunks hashing there are refused with HTTP 402 `batch is
+    overissued`, even though the batch has capacity elsewhere. A record
+    store keeps appending, so it walks into this gradually.
+
+### Watching and renewing the batch
+
+Renewal is the caller's move, but recordstore will tell you when it is
+needed:
+
+```python
+info, _ = store.batch_status()                 # cheap: the /stamps summary
+print(info.ttl / 86400, "days left",
+      info.utilization, "of", info.bucket_capacity, "in the fullest bucket")
+
+info, buckets = store.batch_status(buckets=True)   # exact, ~2 MB response
+print(buckets.max_load, "of", buckets.capacity, "|", buckets.headroom, "free")
+```
+
+Cron that, and renew before it matters. Any of these does it:
+
+```bash
+swarmlite stamps --check --min-ttl 7d          # if you have swarmlite
+swarmlite stamps topup <batchID> --for 4w
+swarm-cli stamp topup <batchID> --amount ...   # the ecosystem CLI
+```
+
+```python
+from swarmfs.stamps import StampManager          # or directly, in Python
+plan = await mgr.plan_topup(batch_id, ttl_secs=4 * 7 * 86400)
+await mgr.topup(batch_id, plan.added_amount)     # spends xBZZ; you decide
+```
+
+If a bucket has filled, the cure is capacity rather than time:
+`StampManager.dilute(batch_id, depth + 1)` doubles every bucket and
+preserves the counters, so the write that was refused then succeeds.
+Dilution costs only gas but roughly halves the remaining validity per
+depth step, so dilute *first* and top up afterwards. A write refused for
+this reason raises with that recipe in the message, and **nothing already
+stored is lost** — the batch keeps paying for what it has stamped.
 - `deferred_upload=True` (default) returns as soon as the node has the
   data locally, with push-sync to the network happening in the background;
   `False` waits. Check network retrievability with Bee's
@@ -396,8 +450,10 @@ store = swarm_store("my-notes", signer=key,
 
 Blobs go to `BeeBytesStore`, the latest root to a `SwarmFeedPointer`, and the
 postage batch is resolved once (possibly from `"auto"`) and shared, so the
-feed's SOC writes and the blob writes are paid from the same batch. Needs both
-extras: `pip install "recordstore[bee,feeds]"`. Everything above `RecordStore`
+feed's SOC writes and the blob writes are paid from the same batch — so one
+batch's expiry takes down both, and `store.blobs.batch_status()` reports for
+both. Needs the extras: `pip install "recordstore[bee,feeds,stamps]"`
+(`stamps` only for `"auto"` and batch health). Everything above `RecordStore`
 stays backend-neutral — this factory is the single answer to "where is Swarm
 specified?".
 

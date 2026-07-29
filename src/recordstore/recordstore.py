@@ -37,6 +37,7 @@ import json
 import hashlib
 import os
 import time
+import warnings
 from concurrent.futures import ThreadPoolExecutor
 from typing import Dict, Iterable, Iterator, List, Optional, Protocol, Tuple
 
@@ -327,29 +328,124 @@ class FsspecBytesStore:
         return [self.put(d) for d in datas]
 
 
-def _auto_batch(api_url: str) -> str:
-    """Resolve 'auto' to a validated usable batch id via swarmfs's
-    StampManager (an optional dependency, imported lazily like requests).
+#: Minimum remaining validity a batch must have to be picked by ``"auto"``.
+#: swarmfs's own floor is 60 s, which is right for a one-shot upload and
+#: wrong for a record store: a batch with a minute left would be selected
+#: and everything written under it would die with it. A day is the smallest
+#: span the network itself will sell.
+AUTO_MIN_BATCH_TTL = 86400
 
-    Selection only, never purchase: a library must not spend the node
-    wallet's xBZZ on its own. To buy programmatically use swarmfs
-    (``StampManager.plan``/``buy``) and pass the resulting id here.
-    """
+#: Below this much remaining validity, selecting a batch warns. Renewal is
+#: the only cure and it must happen *before* expiry — the node drops an
+#: expired batch, a topup against it fails, and the chunks it paid for
+#: become the first candidates for eviction.
+WARN_BATCH_TTL = 7 * 86400
+
+#: Fullest-bucket occupancy (0-1) above which an immutable batch warns.
+#: Chunks land in 65536 buckets by their address; when one fills, further
+#: chunks hashing there are refused (HTTP 402 "batch is overissued") even
+#: though the batch has capacity elsewhere. A record store keeps appending,
+#: so it walks into this rather than hitting it all at once.
+WARN_BUCKET_RATIO = 0.8
+
+
+def _stamp_manager(api_url: str, min_ttl: int):
+    """``(client, StampManager)`` from swarmfs, imported lazily like requests."""
     try:
         from swarmfs._client import SwarmClient
         from swarmfs.stamps import StampManager
     except ImportError:
         raise ImportError(
             "postage_batch_id='auto' needs swarmfs for stamp selection — "
-            "install it (pip install -e path/to/swarmfs) or pass an "
+            "install it (pip install 'recordstore[stamps]') or pass an "
             "explicit batch id (see GET /stamps on your node)"
         ) from None
+    client = SwarmClient(api_url)
+    mgr = StampManager(client, min_ttl=min_ttl)
+    # probe the newest thing this module depends on, not just any new name
+    if not hasattr(mgr, "buckets"):
+        raise ImportError(
+            "stamp inspection needs swarmfs >= 0.4.0 (this one lacks "
+            "StampManager.buckets); upgrade with "
+            "pip install -U 'swarmfs>=0.4.0'"
+        )
+    return client, mgr
+
+
+def batch_status(api_url: str, batch_id: str, *, buckets: bool = False):
+    """A batch's health: ``(StampInfo, BucketStats | None)``.
+
+    The two numbers that decide whether this store keeps working are the
+    remaining validity (``info.ttl``) and how full its fullest bucket is
+    (``info.utilization`` of ``info.bucket_capacity``). Pass
+    ``buckets=True`` for the node's exact per-bucket histogram instead of
+    the summary — authoritative, but a ~2 MB response.
+
+    Read-only, and spends nothing. Renewal is deliberately not offered
+    here: see the module docstring on why a library must not spend the
+    node wallet's xBZZ.
+    """
+    import asyncio
+
+    async def inspect():
+        client, mgr = _stamp_manager(api_url, AUTO_MIN_BATCH_TTL)
+        try:
+            info = await mgr.get_batch(batch_id)
+            stats = await mgr.buckets(batch_id) if buckets else None
+            return info, stats
+        finally:
+            await client.close()
+
+    return asyncio.run(inspect())
+
+
+def _warn_about(info) -> None:
+    """Warn when a selected batch is heading for a failure the caller can
+    still prevent. Both conditions are silent until they bite otherwise."""
+    if 0 <= info.ttl < WARN_BATCH_TTL:
+        warnings.warn(
+            f"postage batch {info.batch_id[:8]}… has {info.ttl / 86400:.1f} "
+            "days of validity left; everything written under it stops being "
+            "paid for at expiry, and an expired batch cannot be revived. "
+            "Renew it now (swarmfs: StampManager.plan_topup/topup, or "
+            "'swarmlite stamps topup <id> --for 4w' if you have swarmlite).",
+            stacklevel=3,
+        )
+    ratio = info.utilization_ratio
+    if info.immutable and ratio is not None and ratio >= WARN_BUCKET_RATIO:
+        warnings.warn(
+            f"postage batch {info.batch_id[:8]}… is {ratio:.0%} through its "
+            f"bucket capacity ({info.utilization} of {info.bucket_capacity} "
+            "chunks in the fullest of 65536 buckets). Further writes risk "
+            "HTTP 402 'batch is overissued'. That does not lose what is "
+            "already stored: dilute one depth to double every bucket "
+            "(swarmfs: StampManager.dilute) and top up afterwards, since "
+            "dilution halves the remaining validity.",
+            stacklevel=3,
+        )
+
+
+def _auto_batch(api_url: str, min_ttl: int = AUTO_MIN_BATCH_TTL) -> str:
+    """Resolve 'auto' to a validated usable batch id via swarmfs's
+    StampManager (an optional dependency, imported lazily like requests).
+
+    Rejects batches with less than ``min_ttl`` seconds left, and warns when
+    the one it picks is close to expiry or to a full bucket — a record store
+    outlives the one-shot upload swarmfs's 60 s floor is written for.
+
+    Selection only, never purchase: a library must not spend the node
+    wallet's xBZZ on its own. To buy programmatically use swarmfs
+    (``StampManager.plan``/``buy``) and pass the resulting id here; to renew
+    one, ``plan_topup``/``topup``.
+    """
     import asyncio
 
     async def resolve() -> str:
-        client = SwarmClient(api_url)
+        client, mgr = _stamp_manager(api_url, min_ttl)
         try:
-            return await StampManager(client).resolve("auto")
+            batch_id = await mgr.resolve("auto")
+            _warn_about(await mgr.get_batch(batch_id))
+            return batch_id
         finally:
             await client.close()
 
@@ -369,11 +465,12 @@ class BeeBytesStore:
     """
 
     def __init__(self, api_url: str, postage_batch_id: str = "auto",
-                 deferred_upload: bool = True, max_concurrent_reads: int = 16):
+                 deferred_upload: bool = True, max_concurrent_reads: int = 16,
+                 min_batch_ttl: int = AUTO_MIN_BATCH_TTL):
         import requests  # lazy: only needed for the real backend
         self.api_url = api_url.rstrip("/")
         if postage_batch_id in (None, "auto"):
-            postage_batch_id = _auto_batch(self.api_url)
+            postage_batch_id = _auto_batch(self.api_url, min_batch_ttl)
         self.batch = postage_batch_id
         self.deferred = deferred_upload
         self.max_concurrent_reads = max(1, max_concurrent_reads)
@@ -387,6 +484,12 @@ class BeeBytesStore:
         self._session.mount("http://", adapter)
         self._session.mount("https://", adapter)
 
+    def batch_status(self, *, buckets: bool = False):
+        """This store's postage batch health — ``(StampInfo, BucketStats |
+        None)``. Cron this to learn that the batch needs renewing while
+        renewal is still possible; see :func:`batch_status`."""
+        return batch_status(self.api_url, self.batch, buckets=buckets)
+
     def put(self, data: bytes) -> Ref:
         r = self._session.post(
             f"{self.api_url}/bytes",
@@ -398,6 +501,28 @@ class BeeBytesStore:
             },
             timeout=120,
         )
+        if r.status_code == 402:
+            # This store owns its transport, so it does not inherit swarmfs's
+            # 402 handling. The two 402s mean different things and only one is
+            # recoverable, so say which: "overissued" is a full bucket, not a
+            # dead stamp, and nothing already stored is lost.
+            detail = r.text[:200]
+            if "overissued" in detail:
+                raise RuntimeError(
+                    f"postage batch {self.batch[:8]}… refused this chunk: a "
+                    f"bucket is full ({detail}). Nothing already stored is "
+                    "lost. Dilute the batch one depth to double every "
+                    "bucket's capacity and retry (swarmfs: "
+                    "StampManager.dilute, or 'swarmlite stamps dilute <id> "
+                    "--depth N'), then top up — dilution halves the "
+                    "remaining validity."
+                )
+            raise RuntimeError(
+                f"the node did not accept postage batch {self.batch[:8]}… "
+                f"({detail}). Check it with GET /stamps/{self.batch}; if it "
+                "expired, a new batch is the only option — expired batches "
+                "cannot be revived."
+            )
         r.raise_for_status()
         return r.json()["reference"]
 

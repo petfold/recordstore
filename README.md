@@ -86,6 +86,9 @@ pip install "recordstore[bee]"
 
 # with the Swarm feed pointer (adds swarm-bee for SOC/secp256k1 signing):
 pip install "recordstore[feeds]"
+
+# with postage_batch_id="auto" and batch-health reporting (adds swarmfs):
+pip install "recordstore[stamps]"
 ```
 
 Python ≥ 3.11. The core imports only the standard library; both extra
