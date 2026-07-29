@@ -295,7 +295,7 @@ be a stable hex string determined by the content.
 A dict keyed by SHA-256. Use it for tests and ephemeral work; `len(store)`
 gives the blob count. Data lives only as long as the object.
 
-### `BeeBytesStore(api_url, postage_batch_id="auto", deferred_upload=True, max_concurrent_reads=16)`
+### `BeeBytesStore(api_url, postage_batch_id="auto", deferred_upload=True, max_concurrent_reads=16, min_batch_ttl=86400)`
 
 A real [Swarm Bee](https://docs.ethswarm.org/) node over its HTTP API
 (`POST`/`GET /bytes`) — named for that endpoint specifically: `/bytes` is
@@ -341,13 +341,18 @@ Renewal is the caller's move, but recordstore will tell you when it is
 needed:
 
 ```python
-info, _ = store.batch_status()                 # cheap: the /stamps summary
+blobs = BeeBytesStore("http://localhost:1633")
+
+info, _ = blobs.batch_status()                 # cheap: the /stamps summary
 print(info.ttl / 86400, "days left",
       info.utilization, "of", info.bucket_capacity, "in the fullest bucket")
 
-info, buckets = store.batch_status(buckets=True)   # exact, ~2 MB response
+info, buckets = blobs.batch_status(buckets=True)   # exact, ~2 MB response
 print(buckets.max_load, "of", buckets.capacity, "|", buckets.headroom, "free")
 ```
+
+From a whole store, reach it through `blobs` —
+`RecordStore(...).blobs.batch_status()`.
 
 Cron that, and renew before it matters. Any of these does it:
 
@@ -676,8 +681,14 @@ multi-release bets (e.g. the canonical-POT convergence track) live in the
   levels of *distinct* nesting. Converting the trie walks to explicit stacks
   would remove the limit if a use case ever needs it.
 - **No garbage collection.** Old versions' blobs are never deleted by this
-  library. On Swarm, chunk lifetime is governed by postage stamps and the
-  network's GC — content simply expires unless re-stamped or pinned; for
+  library. On Swarm, chunk lifetime is governed by postage: when a batch
+  expires its chunks stop being *paid for* and become the first candidates
+  for eviction from the network — not deleted at that instant, but the
+  window is unpredictable, and an expired batch cannot be topped up, so
+  treat expiry as loss. Keep the batch alive instead (see
+  [Watching and renewing the batch](#watching-and-renewing-the-batch)).
+  Local pinning keeps *your* node's copy regardless of postage, but it does
+  not keep the content retrievable from the network. For
   `MemoryBytesStore` everything lives until the process exits.
 - **Record schema version.** Every value blob is wrapped in
   `{"rsv": 1, "val": ...}`; a future format bump will change `rsv` and
