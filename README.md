@@ -62,6 +62,10 @@ and nothing more:
   and equal edits conflict-free, with conflicts raised or settled by a
   `resolver(key, base, ours, theirs)` you supply. The diff is O(divergence),
   not O(dataset).
+- **Version comparison** — `store.diff(other_root)` answers "what changed
+  between these two published versions?" directly: `(key, mine, theirs)` per
+  differing key, the same O(divergence) structural walk, so equal roots read
+  nothing at all.
 - **Multi-writer, no lock server** — `commit(reconcile=True)` makes concurrent
   writers converge: if the pointer moved under you it three-way merges and
   retries instead of overwriting. Race-free in-process; best-effort across
@@ -101,7 +105,7 @@ dependencies are imported lazily — `requests` only by `BeeBytesStore`
 |---|---|---|
 | `BytesStore` | `put(bytes) → ref`, `get(ref) → bytes` | `MemoryBytesStore` (in-memory, testing), `DirBytesStore` (durable local directory), `FsspecBytesStore` (S3/GCS/HTTP/… via fsspec), `BeeBytesStore` (Swarm Bee node over `/bytes` — the blob endpoint, not the raw `/chunks/{address}` primitive) |
 | trie (internal) | canonical persistent radix trie mapping keys to value blobs | — |
-| `RecordStore` | staging, `commit()` / `commit(reconcile=True)`, snapshots, sorted `keys()`/`items()`, three-way `merge()` | — |
+| `RecordStore` | staging, `commit()` / `commit(reconcile=True)`, snapshots, sorted `keys()`/`items()`, three-way `merge()`, structural `diff()` | — |
 | `Pointer` | mutable name for the latest root | `MemoryPointer`, `FilePointer` (atomic local file), `SwarmFeedPointer` (owner-signed Swarm feed, over `swarm-bee`) |
 
 | `swarm_store(topic, ...)` | assembles the two Swarm pieces into a store | the one place Swarm is chosen: `BeeBytesStore` blobs **and** a `SwarmFeedPointer` head |
