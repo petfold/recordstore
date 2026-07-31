@@ -4,6 +4,22 @@ All notable changes to this project are documented here. The format is based on
 [Keep a Changelog](https://keepachangelog.com/), and this project adheres to
 [Semantic Versioning](https://semver.org/).
 
+## [0.15.0] — 2026-08-01
+
+### Added
+
+- **`RecordStore.diff(other_root)`** — "what changed between two published
+  versions?" as a first-class question: yields `(key, mine, theirs)` per
+  differing key, `ABSENT` for a side that lacks the key (so `None` values
+  stay distinguishable), values decoded like `get`. The public face of the
+  structural trie diff `merge` already used internally: shared subtrees are
+  pruned by reference equality, so cost is proportional to the difference —
+  equal roots read zero blobs. Compare arbitrary roots via
+  `RecordStore.at(a, blobs).diff(b)`. Requested by ontodag's
+  `MERKLE_NOTES.md` (no longer a prerequisite for its lazy writer, which
+  shipped without it — this is the standalone "cheap version comparison"
+  half of that note's recommendation).
+
 ## [0.14.0] — 2026-07-29
 
 ### Added

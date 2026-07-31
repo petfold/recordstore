@@ -649,5 +649,86 @@ class TestDiffMergeFuzz(unittest.TestCase):
                              oracle(base, ours, theirs))
 
 
+class CountingBytesStore(MemoryBytesStore):
+    """MemoryBytesStore that counts get() calls — the pruning spy."""
+
+    def __init__(self):
+        super().__init__()
+        self.reads = 0
+
+    def get(self, ref):
+        self.reads += 1
+        return super().get(ref)
+
+
+class TestDiff(unittest.TestCase):
+    def test_changed_added_removed_with_absent_sentinel(self):
+        blobs = MemoryBytesStore()
+        a = RecordStore(blobs)
+        for k, v in [("keep", 1), ("change", "old"), ("drop", True)]:
+            a.put(k, v)
+        root_a = a.commit()
+        b = RecordStore(blobs, root=root_a)
+        b.put("change", "new")
+        b.delete("drop")
+        b.put("add", [1, 2])
+        root_b = b.commit()
+
+        d = {k: (mine, theirs) for k, mine, theirs in a.diff(root_b)}
+        self.assertEqual(d, {
+            "change": ("old", "new"),
+            "drop": (True, ABSENT),
+            "add": (ABSENT, [1, 2]),
+        })
+        # The reverse direction swaps sides.
+        r = {k: (mine, theirs) for k, mine, theirs in
+             RecordStore.at(root_b, blobs).diff(root_a)}
+        self.assertEqual(r["change"], ("new", "old"))
+
+    def test_equal_roots_yield_nothing_and_read_nothing(self):
+        blobs = CountingBytesStore()
+        store = RecordStore(blobs)
+        for i in range(50):
+            store.put(f"k{i}", i)
+        root = store.commit()
+        blobs.reads = 0
+        self.assertEqual(list(store.diff(root)), [])
+        self.assertEqual(blobs.reads, 0)   # canonical fast path
+
+    def test_cost_proportional_to_difference(self):
+        blobs = CountingBytesStore()
+        store = RecordStore(blobs)
+        for i in range(500):
+            store.put(f"key-{i:04d}", {"n": i})
+        root_a = store.commit()
+        other = RecordStore(blobs, root=root_a)
+        other.put("key-0250", {"n": "changed"})
+        root_b = other.commit()
+        blobs.reads = 0
+        changed = list(RecordStore.at(root_a, blobs).diff(root_b))
+        self.assertEqual([c[0] for c in changed], ["key-0250"])
+        self.assertLess(blobs.reads, 25,
+                        f"diff read {blobs.reads} blobs for a 1-key change")
+
+    def test_none_value_is_not_absent(self):
+        blobs = MemoryBytesStore()
+        a = RecordStore(blobs)
+        a.put("x", None)
+        root_a = a.commit()
+        b = RecordStore(blobs)
+        root_b = b.commit()
+        (key, mine, theirs), = RecordStore.at(root_a, blobs).diff(root_b)
+        self.assertEqual((key, mine), ("x", None))
+        self.assertIs(theirs, ABSENT)
+
+    def test_staged_changes_are_not_in_the_diff(self):
+        blobs = MemoryBytesStore()
+        store = RecordStore(blobs)
+        store.put("a", 1)
+        root = store.commit()
+        store.put("b", 2)               # staged, uncommitted
+        self.assertEqual(list(store.diff(root)), [])
+
+
 if __name__ == "__main__":
     unittest.main()

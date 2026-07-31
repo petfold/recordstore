@@ -1405,6 +1405,34 @@ class RecordStore:
         if buf:
             yield from self._flush_items(buf, refs)
 
+    def diff(self, other_root: Optional[Ref]):
+        """Yield ``(key, mine, theirs)`` for every key whose value differs
+        between this store's committed root and `other_root` — "what
+        changed between two published versions?" as a first-class question.
+
+        A side that lacks the key gets the ``ABSENT`` sentinel (a stored
+        value can legitimately be ``None``/null, so ``None`` cannot mean
+        "missing" — the same convention merge resolvers see). Values are
+        decoded fresh, like `get`; keys arrive in no particular order.
+
+        Cost is proportional to the DIFFERENCE, not the dataset: the walk
+        is the same structural trie diff `merge` uses, pruning every
+        subtree whose refs are equal — which canonical roots guarantee for
+        equal content, so diffing a store against itself reads nothing.
+        Staged, uncommitted changes are part of no root and therefore of
+        no diff; commit first. To compare two arbitrary published roots,
+        open one as a snapshot: ``RecordStore.at(a, blobs).diff(b)``.
+        """
+        for kb, mine_ref, theirs_ref in self._trie._diff(self._root,
+                                                         other_root):
+            yield (
+                kb.decode("utf-8"),
+                ABSENT if mine_ref is None
+                else _decode_value(self._blobs.get(mine_ref)),
+                ABSENT if theirs_ref is None
+                else _decode_value(self._blobs.get(theirs_ref)),
+            )
+
     def _flush_items(self, buf, refs: List[Ref]):
         blobs = self._fetch_blobs(refs) if refs else {}
         for key, vref, staged in buf:

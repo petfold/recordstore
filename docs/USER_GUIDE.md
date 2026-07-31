@@ -222,6 +222,16 @@ store.items(prefix="") # → iterator of (key, value), sorted, staged included
   instead of one serial round trip per record. Prefer it over `keys()` +
   `get()` in a loop when hydrating a whole store or prefix (see §6).
 
+**What changed between two versions?** `store.diff(other_root)` yields
+`(key, mine, theirs)` for every key whose value differs between the store's
+committed root and `other_root` — a side missing the key gets the `ABSENT`
+sentinel (a stored value can legitimately be `None`, so `None` can't mean
+"missing"). It walks the same structural trie diff `merge` uses, pruning
+every shared subtree, so the cost is proportional to the *difference*, not
+the dataset — diffing a root against itself reads nothing. Staged changes
+are part of no root, so commit first; to compare two arbitrary published
+roots, `RecordStore.at(a, blobs).diff(b)`.
+
 ### Writing
 
 ```python
