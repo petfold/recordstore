@@ -30,6 +30,13 @@ system, Solidity verifier, and cross-language interop — public API unchanged.
 If upstream never adopts, the radix trie stays and the work below still pays for
 itself (see *Standalone value*).
 
+*Update 2026-08-01:* the radix trie now has **native** inclusion/absence
+proofs (`RecordStore.prove` / `verify_proof`, v0.16.0) — the off-chain half
+of the proof story, verifiable by anyone holding the root, no store access.
+What the POT track would still add is the *on-chain* half (the Solidity
+`POTProofVerifier`) and wire-format interop; a future C-track item should
+define the proof interface so both encodings serve it.
+
 ### Guardrails
 
 - The radix trie remains the **default and only production encoding** until

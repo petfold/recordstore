@@ -62,6 +62,11 @@ and nothing more:
   and equal edits conflict-free, with conflicts raised or settled by a
   `resolver(key, base, ours, theirs)` you supply. The diff is O(divergence),
   not O(dataset).
+- **Verifiable proofs** — `store.prove(key)` produces a small, JSON-ready
+  inclusion **or absence** proof against the committed root (absence is
+  provable because the canonical encoding gives a key exactly one possible
+  location); `verify_proof(proof, root)` checks it with no store access at
+  all — hold the 32-byte root, verify any claim about the dataset.
 - **Version comparison** — `store.diff(other_root)` answers "what changed
   between these two published versions?" directly: `(key, mine, theirs)` per
   differing key, the same O(divergence) structural walk, so equal roots read

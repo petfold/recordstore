@@ -4,6 +4,30 @@ All notable changes to this project are documented here. The format is based on
 [Keep a Changelog](https://keepachangelog.com/), and this project adheres to
 [Semantic Versioning](https://semver.org/).
 
+## [0.16.0] — 2026-08-01
+
+### Added
+
+- **Verifiable inclusion and absence proofs**: `RecordStore.prove(key)` →
+  a self-describing, JSON-ready envelope (`{format, version, addressing,
+  root, key, present, nodes, value}`) carrying the RAW trie-node blobs
+  along the key's one possible path; module-level
+  `verify_proof(proof, root)` checks it with **no store access** — pure
+  hash-chain recomputation over the carried bytes, never re-serialization —
+  returning the record for an inclusion proof or the `ABSENT` sentinel for
+  an absence proof, raising `ProofError` on any mismatch. The canonical
+  encoding is what makes *absence* provable: a key has exactly one place it
+  could live under a given root, so exhibiting the path where the walk dies
+  is authoritative. Proofs are O(depth) small, name their addressing scheme
+  (`sha256`/`swarm`, auto-detected, `addressing=` to override), refuse keys
+  with staged uncommitted changes (proofs are statements about committed
+  roots), and are self-verified before being returned — so e.g. a Bee node
+  whose erasure coding makes server refs diverge from plain content
+  addresses fails loudly at prove time, not silently at the verifier.
+  New exports: `verify_proof`, `ProofError`, `PROOF_FORMAT`. Requested by
+  ontodag's CONTRACT.md §7 Tier 2 (the substrate for its `is_below`
+  certificates and the factbond dispute rung).
+
 ## [0.15.0] — 2026-08-01
 
 ### Added

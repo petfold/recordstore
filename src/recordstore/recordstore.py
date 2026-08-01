@@ -897,6 +897,115 @@ class _Trie:
 
 
 # ---------------------------------------------------------------------------
+# Proofs: verifiable inclusion and absence against a root
+#
+# The trie is canonically encoded, so a key has exactly ONE possible location
+# under a given root — which is what makes *absence* provable (exhibit the
+# path where the key would live and show the walk dies there), not just
+# inclusion. A proof is a self-describing JSON-ready dict carrying the RAW
+# node blobs (hex); verification is hash-chain recomputation over those
+# exact bytes — never re-serialization — so it needs no bytes store, no
+# network, and no trust in the prover: just the root reference and the
+# addressing scheme named in the envelope. New proof formats version by
+# *name* (readers ignore formats they don't know); the layout below is
+# format "recordstore-trie-proof", version 1.
+# ---------------------------------------------------------------------------
+
+PROOF_FORMAT = "recordstore-trie-proof"
+
+
+class ProofError(Exception):
+    """The proof does not verify against the given root."""
+
+
+def _addressing_name(blobs) -> str:
+    """The addressing-scheme *name* a proof envelope can carry (it must be
+    resolvable by any verifier, so callables have no place in it)."""
+    if isinstance(blobs, MemoryBytesStore):
+        return "sha256"
+    if isinstance(blobs, BeeBytesStore):
+        return "swarm"
+    ref_of = getattr(blobs, "_ref_of", None)
+    for name, fn in _ADDRESSING.items():
+        if ref_of is fn:
+            return name
+    raise ValueError(
+        "cannot determine this bytes store's addressing scheme; pass "
+        "prove(key, addressing='sha256'|'swarm') explicitly")
+
+
+def verify_proof(proof, root: Optional[Ref]):
+    """Check `proof` against `root` (the reference the *verifier* trusts —
+    None for an empty store) and return the proven record for an inclusion
+    proof, or the ``ABSENT`` sentinel for an absence proof. Raises
+    ``ProofError`` on any mismatch. Pure: reads no store, replays the walk
+    over the raw bytes carried in the envelope.
+    """
+    if not isinstance(proof, dict) or proof.get("format") != PROOF_FORMAT:
+        raise ProofError(f"not a {PROOF_FORMAT} envelope")
+    if proof.get("version") != 1:
+        raise ProofError(f"unsupported proof version {proof.get('version')!r}")
+    if proof.get("root") != root:
+        raise ProofError(
+            f"proof is about root {proof.get('root')!r}, not {root!r}")
+    ref_of = _resolve_addressing(proof.get("addressing"))
+    key = proof.get("key")
+    if not isinstance(key, str) or key == "":
+        raise ProofError("proof carries no key")
+    try:
+        nodes = [bytes.fromhex(blob) for blob in proof.get("nodes", [])]
+    except (TypeError, ValueError):
+        raise ProofError("malformed node bytes in proof") from None
+
+    expected = root
+    remaining = key.encode("utf-8")
+    verdict = None  # (found, value_ref) once the walk concludes
+    for i, blob in enumerate(nodes):
+        if verdict is not None:
+            raise ProofError(f"node {i} continues past the walk's conclusion")
+        if ref_of(blob) != expected:
+            raise ProofError(
+                f"node {i} does not hash to the expected reference")
+        try:
+            node = _Trie._decode(blob)
+        except (ValueError, KeyError):
+            raise ProofError(f"node {i} is not a valid trie node") from None
+        if not remaining.startswith(node.prefix):
+            verdict = (False, None)          # diverges inside the prefix
+        else:
+            remaining = remaining[len(node.prefix):]
+            if remaining == b"":
+                verdict = (node.value_ref is not None, node.value_ref)
+            else:
+                child = node.children.get(remaining[0])
+                if child is None:
+                    verdict = (False, None)  # nowhere to descend
+                else:
+                    expected, remaining = child, remaining[1:]
+    if verdict is None:
+        if root is None:
+            verdict = (False, None)          # the empty store holds nothing
+        else:
+            raise ProofError("proof ends before the walk does")
+
+    found, value_ref = verdict
+    if found != bool(proof.get("present")):
+        raise ProofError("the proof's claim contradicts its own path")
+    if not found:
+        if proof.get("value") is not None:
+            raise ProofError("absence proof carries a value")
+        return ABSENT
+    try:
+        value_blob = bytes.fromhex(proof["value"])
+    except (TypeError, ValueError, KeyError):
+        raise ProofError("malformed value bytes in proof") from None
+    if ref_of(value_blob) != value_ref:
+        raise ProofError(
+            "value bytes do not hash to the trie's value reference")
+    return _decode_value(value_blob)
+
+
+# ---------------------------------------------------------------------------
 # Pointers ("latest root")
 # ---------------------------------------------------------------------------
 
@@ -1332,6 +1441,58 @@ class RecordStore:
             return True
         except KeyError:
             return False
+
+    def prove(self, key: str, addressing: Optional[str] = None) -> dict:
+        """A verifiable inclusion-or-absence proof for `key` against the
+        committed root: the raw trie-node blobs along the key's one possible
+        path (canonical encoding makes absence provable), plus the value
+        blob when present. The result is a JSON-ready dict that
+        ``verify_proof(proof, root)`` checks with no store access.
+
+        Proofs are statements about a committed root, so a key with staged
+        changes is refused — commit first. `addressing` names the scheme a
+        verifier should recompute references with; it is detected from the
+        bytes store when omitted. Every proof is self-verified before being
+        returned, so a mismatched addressing scheme (e.g. a Bee node that
+        added erasure coding, whose references are not the plain content
+        address) fails loudly here rather than silently at the verifier.
+        """
+        kb = self._check_key(key)
+        if key in self._staged:
+            raise ValueError(
+                f"{key!r} has staged, uncommitted changes — proofs are "
+                "statements about a committed root; commit() first")
+        name = addressing or _addressing_name(self._blobs)
+        nodes: List[str] = []
+        present = False
+        value_hex = None
+        ref, remaining = self._root, kb
+        while ref is not None:
+            blob = self._blobs.get(ref)   # the exact bytes behind the ref
+            nodes.append(blob.hex())
+            node = _Trie._decode(blob)
+            if not remaining.startswith(node.prefix):
+                break
+            remaining = remaining[len(node.prefix):]
+            if remaining == b"":
+                if node.value_ref is not None:
+                    present = True
+                    value_hex = self._blobs.get(node.value_ref).hex()
+                break
+            ref = node.children.get(remaining[0])
+            remaining = remaining[1:]
+        proof = {
+            "format": PROOF_FORMAT,
+            "version": 1,
+            "addressing": name,
+            "root": self._root,
+            "key": key,
+            "present": present,
+            "nodes": nodes,
+            "value": value_hex,
+        }
+        verify_proof(proof, self._root)   # never hand out a broken proof
+        return proof
 
     def put(self, key: str, value) -> None:
         if self._readonly:

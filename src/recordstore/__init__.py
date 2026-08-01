@@ -12,6 +12,9 @@ from .recordstore import (
     ABSENT,
     DELETE,
     canonical_bytes,
+    verify_proof,
+    ProofError,
+    PROOF_FORMAT,
 )
 
 __all__ = [
@@ -28,4 +31,7 @@ __all__ = [
     "ABSENT",
     "DELETE",
     "canonical_bytes",
+    "verify_proof",
+    "ProofError",
+    "PROOF_FORMAT",
 ]
