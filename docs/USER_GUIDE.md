@@ -272,6 +272,46 @@ in-process-vs-networked guarantees. Plain `commit()` is last-write-wins.
 theirs, resolver=None) → root` three-way merges two divergent roots and is the
 primitive `reconcile` builds on; full semantics and examples in §5.
 
+### Proving (0.16.0+)
+
+```python
+from recordstore import verify_proof, ProofError, ABSENT
+
+proof = store.prove(key)               # against the committed root
+value = verify_proof(proof, root)      # pure: no store access at all
+```
+
+`prove(key)` returns a small, JSON-ready dict — `{format, version,
+addressing, root, key, present, nodes, value}` — carrying the **raw**
+trie-node blobs along the key's one possible path (plus the value blob when
+present). `verify_proof(proof, root)` replays the walk over those exact
+bytes, recomputing every reference with the addressing scheme the envelope
+names: it returns the record for an inclusion proof, the `ABSENT` sentinel
+for an absence proof, and raises `ProofError` on *any* mismatch. The
+verifier needs the root reference and nothing else — no bytes store, no
+network, no trust in whoever produced the proof.
+
+**Absence is provable**, not just inclusion: the canonical encoding gives a
+key exactly one possible location under a given root, so exhibiting the
+path where the walk dies is authoritative. That is a property most Merkle
+structures do not have, and it falls out of the canonicity contract (§1).
+
+Details worth knowing:
+
+- Proofs are statements about the **committed** root; `prove` of a key with
+  staged, uncommitted changes raises `ValueError` (commit first). Other
+  staged keys don't interfere.
+- `addressing` is detected from the bytes store (`sha256` for
+  `MemoryBytesStore` and the default `DirBytesStore`/`FsspecBytesStore`;
+  `swarm` for `BeeBytesStore` and swarm-addressed local stores); pass
+  `prove(key, addressing="sha256")` for duck-typed stores.
+- Every proof is **self-verified before being returned**, so a mismatch —
+  e.g. a Bee node whose erasure coding makes server references diverge from
+  the plain content address — fails loudly at prove time, never silently at
+  the verifier.
+- Proofs are O(depth): a handful of nodes even for one key among thousands,
+  and they survive `json.dumps`/`loads` (they are designed to travel).
+
 ### Error summary
 
 | Situation | Raised |
@@ -284,6 +324,9 @@ primitive `reconcile` builds on; full semantics and examples in §5.
 | blob missing from the bytes store | `KeyError` (from the backend) |
 | unresolved merge conflict (no `resolver`) | `MergeConflict` (`.conflicts`) |
 | `reconcile` cannot land after `retries` | `RuntimeError` |
+| `prove` of a key with staged changes | `ValueError` |
+| `prove` on a store with unknown addressing | `ValueError` (pass `addressing=`) |
+| proof fails verification (any tampering) | `ProofError` |
 
 ---
 
