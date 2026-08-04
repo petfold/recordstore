@@ -4,6 +4,24 @@ All notable changes to this project are documented here. The format is based on
 [Keep a Changelog](https://keepachangelog.com/), and this project adheres to
 [Semantic Versioning](https://semver.org/).
 
+## [Unreleased]
+
+### Changed
+
+- **Extras reorganized by use case** (breaking: no aliases kept).
+  `[local]` → **`[local-first-swarm]`** — the old name read as "local
+  storage" when it gates local-*first*-with-Swarm. New
+  **`[swarm-only]`** bundles the direct-on-Swarm trio
+  (`bee`+`feeds`+`stamps`, i.e. everything `swarm_store()` needs) that
+  downstreams used to hand-roll. `[swarm-addressing]` keeps its name
+  (it gates the offline-mirror addressing *scheme*, not Swarm access)
+  but collapses to a plain `swarmfs>=0.9.0` floor — keccak moved into
+  swarmfs's base install in its 0.9, which also closes a latent gap:
+  `local_first_store`'s default `addressing="swarm"` always needed
+  keccak, but the old extra never declared `swarmfs[feeds]`, so a
+  fresh install could fail at store-open. The `[local-first-swarm]`
+  floor is `swarmfs>=0.9.0` for the same reason.
+
 ## [0.18.2] — 2026-08-04
 
 ### Added

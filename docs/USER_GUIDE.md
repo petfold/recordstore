@@ -520,7 +520,8 @@ Blobs go to `BeeBytesStore`, the latest root to a `SwarmFeedPointer`, and the
 postage batch is resolved once (possibly from `"auto"`) and shared, so the
 feed's SOC writes and the blob writes are paid from the same batch — so one
 batch's expiry takes down both, and `store.blobs.batch_status()` reports for
-both. Needs the extras: `pip install "recordstore[bee,feeds,stamps]"`
+both. Needs the direct-on-Swarm bundle:
+`pip install "recordstore[swarm-only]"` (= `[bee,feeds,stamps]`)
 (`stamps` only for `"auto"` and batch health). Everything above `RecordStore`
 stays backend-neutral — this factory is the single answer to "where is Swarm
 specified?".
@@ -551,9 +552,11 @@ set: unpushed data is pinned (the limit is soft for it — you can always
 save work), only Swarm-confirmed blobs are evicted under pressure, and
 reading an evicted record transparently re-fetches and re-verifies it.
 This also closes the §7 read-trust gap for evicted reads: healed bytes
-are hashed against their reference. Needs swarmfs — the `[local]`
-extra's floor is 0.7.0 (`pip install "recordstore[local]"`); the design
-lives in swarmfs's `docs/localstore-design.md`.
+are hashed against their reference. Needs swarmfs ≥ 0.9
+(`pip install "recordstore[local-first-swarm]"`; that floor also brings
+keccak in swarmfs's base install, which the default
+`addressing="swarm"` requires); the design lives in swarmfs's
+`docs/localstore-design.md`.
 
 The working set is yours to shape (0.18.0+): `store.pin("hot", "users/")`
 keeps everything under a prefix on disk no matter the eviction pressure

@@ -96,7 +96,9 @@ retention, `scrub()` for bitrot (localstore).
   CHANGELOG), commit, `git tag vX.Y.Z && git push origin main vX.Y.Z`.
   The tag triggers publish via PyPI trusted publishing after CI re-runs
   the tests.
-- **Dependency floors matter here**: `recordstore[local]` = swarmfs ≥ 0.7,
+- **Dependency floors matter here**: `recordstore[local-first-swarm]` = swarmfs ≥ 0.9
+  (keccak in swarmfs's base since 0.9; its `[feeds]` extra is signing-only now);
+  `recordstore[swarm-only]` bundles the direct-on-Swarm trio,
   `ontodag-fs` = swarmfs ≥ 0.8 (`read_reference`/`reference_size` — the
   public raw-ref surface that replaced its private `_read_reference`
   reach; the extras' comments explain which floor buys what). swarmfs

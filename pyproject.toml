@@ -28,12 +28,21 @@ fsspec = ["fsspec"]
 # 0.4.0 is the floor: earlier swarmfs has no StampManager.list_batches or
 # .buckets, so the inspection path would fail at runtime instead of install.
 stamps = ["swarmfs>=0.4.0"]
-# local_first_store needs swarmfs's localstore/localsync (0.5.0+),
-# squash_history needs rebase_root/gc_orphans (0.6.0+); the 0.7.0 floor
-# additionally pulls in swarmfs's fsspec<2024.3.0 transaction-crash fix,
-# which matters on LTS systems running distro fsspec.
-local = ["swarmfs>=0.7.0"]
-swarm-addressing = ["swarmfs[feeds]"]
+# local_first_store: disk now, Swarm in the background. The 0.9.0 floor
+# gives localstore/localsync, squash (rebase_root/gc_orphans), the
+# fsspec<2024.3.0 transaction fix, AND keccak in swarmfs's base install
+# (before 0.9, addressing="swarm" needed swarmfs[feeds] — a latent gap
+# this extra never declared). Renamed from [local] (0.17.0-0.18.2),
+# which read as "local storage" rather than local-FIRST-with-Swarm.
+local-first-swarm = ["swarmfs>=0.9.0"]
+# the whole store directly ON Swarm, no local layer — everything
+# swarm_store() needs (BeeBytesStore + SwarmFeedPointer + "auto" stamp
+# selection). The bundle downstreams used to hand-roll as
+# recordstore[bee,feeds,stamps].
+swarm-only = ["requests", "swarm-bee", "swarmfs>=0.9.0"]
+# plain swarmfs suffices since 0.9.0 (keccak in base; [feeds] is now
+# signing-only and irrelevant to addressing)
+swarm-addressing = ["swarmfs>=0.9.0"]
 feeds = ["swarm-bee"]
 test = ["pytest"]
 

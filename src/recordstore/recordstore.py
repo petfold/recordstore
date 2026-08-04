@@ -2147,7 +2147,7 @@ class LocalFirstRecordStore(RecordStore):
         if not hasattr(self.local, "rebase_root"):
             raise RuntimeError(
                 "history squashing needs swarmfs >= 0.6 "
-                '(pip install -U "recordstore[local]")')
+                '(pip install -U "recordstore[local-first-swarm]")')
         nodes, blobs = set(), set()
         for kind, ref in self._refs_under(""):
             blobs.add(ref)
@@ -2209,7 +2209,7 @@ def local_first_store(path: str, api_url: Optional[str] = None, *,
     addressing means returning to a previous state re-uses its old root,
     which the append-only journal deliberately refuses to duplicate).
 
-    Requires swarmfs >= 0.5 (``pip install "recordstore[local]"``).
+    Requires swarmfs >= 0.9 (``pip install "recordstore[local-first-swarm]"``).
     Feed publication is not wired here yet — publishing a head to a Swarm
     feed belongs *after* confirmation, and lands with the R2 phase.
     """
@@ -2218,7 +2218,7 @@ def local_first_store(path: str, api_url: Optional[str] = None, *,
     except ImportError as e:
         raise ImportError(
             "local_first_store needs swarmfs with its localstore module "
-            '(>= 0.5): pip install "recordstore[local]"') from e
+            '(>= 0.9): pip install "recordstore[local-first-swarm]"') from e
     if api_url is not None and addressing != "swarm":
         raise ValueError(
             'pushing to Swarm requires addressing="swarm" (the push '

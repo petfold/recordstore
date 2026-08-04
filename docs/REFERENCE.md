@@ -37,8 +37,9 @@ Package version this file describes: `0.18.2`.
 | `pip install "recordstore[feeds]"` | `SwarmFeedPointer` (swarm-bee) |
 | `pip install "recordstore[stamps]"` | `postage_batch_id="auto"`, `batch_status` (swarmfs ≥ 0.4) |
 | `pip install "recordstore[fsspec]"` | `FsspecBytesStore` |
-| `pip install "recordstore[swarm-addressing]"` | `DirBytesStore(addressing="swarm")` (swarmfs BMT) |
-| `pip install "recordstore[local]"` | `local_first_store` (swarmfs ≥ 0.7) |
+| `pip install "recordstore[swarm-addressing]"` | `DirBytesStore(addressing="swarm")` (swarmfs ≥ 0.9 — keccak is in its base install) |
+| `pip install "recordstore[swarm-only]"` | the whole store directly on Swarm: `swarm_store` (`BeeBytesStore` + `SwarmFeedPointer` + `"auto"` stamps) |
+| `pip install "recordstore[local-first-swarm]"` | `local_first_store`: disk now, Swarm in the background (swarmfs ≥ 0.9) |
 
 ## 3. Exports
 

@@ -107,6 +107,12 @@ pip install "recordstore[feeds]"
 
 # with postage_batch_id="auto" and batch-health reporting (adds swarmfs):
 pip install "recordstore[stamps]"
+
+# the whole store directly ON Swarm — everything swarm_store() needs:
+pip install "recordstore[swarm-only]"
+
+# disk now, Swarm in the background — everything local_first_store() needs:
+pip install "recordstore[local-first-swarm]"
 ```
 
 Python ≥ 3.11. The core imports only the standard library; both extra
@@ -123,7 +129,7 @@ dependencies are imported lazily — `requests` only by `BeeBytesStore`
 | `Pointer` | mutable name for the latest root | `MemoryPointer`, `FilePointer` (atomic local file), `SwarmFeedPointer` (owner-signed Swarm feed, over `swarm-bee`) |
 
 | `swarm_store(topic, ...)` | assembles the two Swarm pieces into a store | the one place Swarm is chosen: `BeeBytesStore` blobs **and** a `SwarmFeedPointer` head |
-| `local_first_store(path, api_url)` | disk now, Swarm in the background | swarmfs `LocalStore` + journal (the reflog) + background push/confirm; `sync()`, `sync_status()`, `pin`/`fetch`, `publish(pointer)`, `squash_history()` (`[local]` extra, swarmfs ≥ 0.7) |
+| `local_first_store(path, api_url)` | disk now, Swarm in the background | swarmfs `LocalStore` + journal (the reflog) + background push/confirm; `sync()`, `sync_status()`, `pin`/`fetch`, `publish(pointer)`, `squash_history()` (`[local-first-swarm]` extra, swarmfs ≥ 0.9) |
 
 Nothing above `RecordStore` ever sees a stored blob or a trie node — and
 nothing below it needs to know Swarm exists unless you asked for it:
