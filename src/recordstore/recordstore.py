@@ -38,6 +38,7 @@ import hashlib
 import os
 import time
 import warnings
+from collections import OrderedDict
 from concurrent.futures import ThreadPoolExecutor
 from typing import Dict, Iterable, Iterator, List, Optional, Protocol, Tuple
 
@@ -557,6 +558,87 @@ class BeeBytesStore:
         return r.content
 
 
+class CachedBytesStore:
+    """A byte-budgeted in-memory LRU cache in front of any BytesStore.
+
+    Closes the gap that made every re-read of a committed record a fresh
+    backend fetch: value blobs were never cached (only decoded trie nodes
+    were). Wrap any backend —
+    ``RecordStore(CachedBytesStore(BeeBytesStore(...)))`` — and repeat
+    reads are served from memory. Safe by construction: blobs are
+    immutable and content-addressed, so a cached entry can never go stale.
+
+    ``max_bytes`` bounds the cache, LRU-evicted (this is a transparent
+    accelerator, not a replica — it may drop anything; the inner store is
+    authoritative). A blob larger than the whole budget is served but
+    never cached. Unknown attributes delegate to the inner store, so
+    backend extras (``batch_status``, a local-first store's
+    ``commit_root``/``status``) keep working through the wrapper.
+    """
+
+    def __init__(self, inner: BytesStore, max_bytes: int = 64 * 1024 * 1024):
+        self.inner = inner
+        self.max_bytes = max_bytes
+        self._cache: "OrderedDict[Ref, bytes]" = OrderedDict()
+        self._bytes = 0
+
+    def _remember(self, ref: Ref, data: bytes) -> None:
+        if len(data) > self.max_bytes:
+            return
+        if ref in self._cache:
+            self._bytes -= len(self._cache.pop(ref))
+        self._cache[ref] = data
+        self._bytes += len(data)
+        while self._bytes > self.max_bytes:
+            _, dropped = self._cache.popitem(last=False)
+            self._bytes -= len(dropped)
+
+    def put(self, data: bytes) -> Ref:
+        ref = self.inner.put(data)
+        self._remember(ref, data)
+        return ref
+
+    def get(self, ref: Ref) -> bytes:
+        data = self._cache.get(ref)
+        if data is not None:
+            self._cache.move_to_end(ref)
+            return data
+        data = self.inner.get(ref)
+        self._remember(ref, data)
+        return data
+
+    def put_many(self, datas: Iterable[bytes]) -> List[Ref]:
+        datas = list(datas)
+        put_many = getattr(self.inner, "put_many", None)
+        refs = (put_many(datas) if put_many
+                else [self.inner.put(d) for d in datas])
+        for ref, data in zip(refs, datas):
+            self._remember(ref, data)
+        return refs
+
+    def get_many(self, refs: Iterable[Ref]) -> Dict[Ref, bytes]:
+        refs = list(refs)
+        out, missing = {}, []
+        for ref in refs:
+            data = self._cache.get(ref)
+            if data is not None:
+                self._cache.move_to_end(ref)
+                out[ref] = data
+            else:
+                missing.append(ref)
+        if missing:
+            get_many = getattr(self.inner, "get_many", None)
+            fetched = (get_many(missing) if get_many
+                       else {r: self.inner.get(r) for r in missing})
+            for ref, data in fetched.items():
+                self._remember(ref, data)
+            out.update(fetched)
+        return {r: out[r] for r in refs}
+
+    def __getattr__(self, name):
+        return getattr(self.inner, name)
+
+
 # ---------------------------------------------------------------------------
 # Persistent compacted radix trie (canonical)
 #
@@ -578,10 +660,57 @@ class _Node:
         self.children = children  # first-byte -> child node ref
 
 
+#: Default bound on the decoded-node cache: ~65k nodes at a few hundred
+#: bytes each is tens of MB — plenty of locality, safe for stores whose
+#: node count dwarfs RAM. Raise it for hot huge stores, lower it for tight
+#: memory; correctness never depends on it (nodes are immutable and
+#: re-fetchable).
+DEFAULT_NODE_CACHE_SIZE = 65536
+
+
+class _NodeCache:
+    """Bounded LRU over decoded trie nodes. Any entry may be dropped —
+    except commit-scoped `pending:` placeholders, which exist only here
+    until `_flush` resolves them; evicting one mid-commit would lose the
+    node, so they are exempt (and `_reset_buffer` removes them)."""
+
+    def __init__(self, maxsize: int):
+        self.maxsize = max(1, maxsize)
+        self._d: "OrderedDict[Ref, _Node]" = OrderedDict()
+
+    def get(self, ref: Ref) -> Optional["_Node"]:
+        node = self._d.get(ref)
+        if node is not None:
+            self._d.move_to_end(ref)
+        return node
+
+    def __contains__(self, ref: Ref) -> bool:
+        return ref in self._d
+
+    def __len__(self) -> int:
+        return len(self._d)
+
+    def __setitem__(self, ref: Ref, node: "_Node") -> None:
+        d = self._d
+        if ref in d:
+            d.move_to_end(ref)
+        d[ref] = node
+        while len(d) > self.maxsize:
+            victim = next((k for k in d if not k.startswith("pending:")),
+                          None)
+            if victim is None:
+                break  # only pending placeholders left: keep them all
+            del d[victim]
+
+    def pop(self, ref: Ref, default=None):
+        return self._d.pop(ref, default)
+
+
 class _Trie:
-    def __init__(self, bytes_store: BytesStore):
+    def __init__(self, bytes_store: BytesStore,
+                 cache_size: int = DEFAULT_NODE_CACHE_SIZE):
         self._blobs = bytes_store
-        self._cache: Dict[Ref, _Node] = {}  # nodes are immutable => safe
+        self._cache = _NodeCache(cache_size)  # nodes are immutable => safe
         # Commit-scoped write buffer. While buffering, `_store` defers to
         # placeholder refs instead of uploading; `_flush` then writes only the
         # nodes surviving in the final root, bottom-up and one level per batch.
@@ -613,14 +742,21 @@ class _Trie:
         """Load several nodes, fetching the uncached ones in one batch so a
         network store can parallelise the round trips (falls back to serial
         `get` if the store has no `get_many`)."""
-        missing = list({r for r in refs if r not in self._cache})
+        out: Dict[Ref, _Node] = {}
+        for r in set(refs):
+            node = self._cache.get(r)
+            if node is not None:
+                out[r] = node
+        missing = [r for r in set(refs) if r not in out]
         if missing:
             get_many = getattr(self._blobs, "get_many", None)
             blobs = (get_many(missing) if get_many
                      else {r: self._blobs.get(r) for r in missing})
             for r in missing:
-                self._cache[r] = self._decode(blobs[r])
-        return {r: self._cache[r] for r in refs}
+                node = self._decode(blobs[r])
+                self._cache[r] = node
+                out[r] = node  # held here even if the LRU evicts it
+        return {r: out[r] for r in refs}
 
     @staticmethod
     def _serialize(prefix: bytes, value_ref: Optional[Ref],
@@ -1389,9 +1525,10 @@ class RecordStore:
     """
 
     def __init__(self, bytes_store: BytesStore, root: Optional[Ref] = None,
-                 pointer: Optional[Pointer] = None, _readonly: bool = False):
+                 pointer: Optional[Pointer] = None, _readonly: bool = False,
+                 node_cache_size: int = DEFAULT_NODE_CACHE_SIZE):
         self._blobs = bytes_store
-        self._trie = _Trie(bytes_store)
+        self._trie = _Trie(bytes_store, cache_size=node_cache_size)
         self._root = pointer.get() if (pointer and root is None) else root
         self._pointer = pointer
         self._staged: Dict[str, object] = {}
