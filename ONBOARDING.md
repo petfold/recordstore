@@ -2,11 +2,11 @@
 
 Two sibling repos, developed together, released to PyPI separately:
 
-- **`swarmfs`** (`~/projects/swarmfs`, v0.7.0) — an fsspec backend for
+- **`swarmfs`** (`~/projects/swarmfs`, v0.8.0) — an fsspec backend for
   Ethereum Swarm over a Bee node's HTTP API (`bzz://` immutable,
   `bzzf://` feed-mounted mutable), plus the **local-first storage layer**
   the whole stack now rests on: `swarmfs.localstore` + `swarmfs.localsync`.
-- **`recordstore`** (`~/projects/recordstore`, v0.18.1) — a versioned
+- **`recordstore`** (`~/projects/recordstore`, v0.18.2) — a versioned
   key→record store (JSON values, atomic commits, canonical roots,
   three-way merge, verifiable proofs) over any content-addressed
   `BytesStore` — memory, local disk, S3, a Bee node, or the local-first
@@ -45,7 +45,7 @@ retention, `scrub()` for bitrot (localstore).
 
 | Document | What it is |
 |---|---|
-| `recordstore/docs/REFERENCE.md`, `swarmfs/docs/REFERENCE.md` | **Start here as an agent**: definition-first tables of every export, signature, error and extra — pinned against the code by each repo's `tests/test_reference.py`, so they cannot rot. The user guides are the human tutorials. |
+| `docs/REFERENCE.md` — in **every** repo of the cluster (recordstore, swarmfs, ontodag, ontodag-fs) | **Start here as an agent**: definition-first tables of every export, signature, error and extra — pinned against the code by each repo's `tests/test_reference.py`, so they cannot rot, and each carries a "version this file describes" line the tests compare to `pyproject.toml`. The user guides are the human tutorials; SPEC/CONTRACT files (ontodag-fs, ontodag) are the semantics contracts. Cross-repo doc pointers always go to these pinned references, never to hand-synced copies (ontodag's `recordstore-interface.md` is only the consumer-side view now). |
 | `swarmfs/docs/localstore-design.md` | The design: invariant, ladder, auto-push policy, verification/trust (incl. why confirmation is p2p-native — Bee's stewardship retrieves through the network, verified from its source), performance posture. |
 | `swarmfs/docs/localstore-format.md` | **Normative** on-disk format (blobs + append-only JSONL journal + disposable index). The format is the interop contract — a Go/JS implementation works from this file. The lag rule: journal events are appended only after the fact they record is true. |
 | `swarmfs/docs/roadmap.md` §v3 | Phase history L0–L4 with findings pinned per phase — read the findings; they are the sharp edges. |
@@ -86,14 +86,21 @@ retention, `scrub()` for bitrot (localstore).
   `SWARMFS_TEST_SPEND`). A local Bee 2.8.1 node usually runs on :1633.
   House style: pin live-measured facts in tests with the numbers in
   comments; never mock the trie/manifest formats.
-- **Release** (identical in both repos): bump version — swarmfs has it in
-  `pyproject.toml` **and** `swarmfs/__init__.py` plus the CLAUDE.md
-  narrative; recordstore in `pyproject.toml` + CHANGELOG — commit, then
-  `git tag vX.Y.Z && git push origin main vX.Y.Z`. The tag triggers
-  publish via PyPI trusted publishing after CI re-runs the tests.
-- **Dependency floors matter here**: `recordstore[local]` = swarmfs ≥ 0.7
-  (the extra's comment explains which floor buys what). swarmfs runtime
-  needs only `fsspec>=2023.6` + `aiohttp`.
+- **Release** (identical across the cluster, and **docs come first** —
+  Peter's standing rule): sweep README/user guide/roadmap/CHANGELOG and
+  `docs/REFERENCE.md` — its "version this file describes" line is
+  test-pinned to pyproject, so a version bump without the reference
+  update fails the suite before the tag can ship. Then bump the version
+  (swarmfs keeps it in `pyproject.toml` **and** `swarmfs/__init__.py`
+  plus the CLAUDE.md narrative; the others in `pyproject.toml` +
+  CHANGELOG), commit, `git tag vX.Y.Z && git push origin main vX.Y.Z`.
+  The tag triggers publish via PyPI trusted publishing after CI re-runs
+  the tests.
+- **Dependency floors matter here**: `recordstore[local]` = swarmfs ≥ 0.7,
+  `ontodag-fs` = swarmfs ≥ 0.8 (`read_reference`/`reference_size` — the
+  public raw-ref surface that replaced its private `_read_reference`
+  reach; the extras' comments explain which floor buys what). swarmfs
+  runtime needs only `fsspec>=2023.6` + `aiohttp`.
 
 ## What's deliberately NOT done
 
