@@ -544,9 +544,9 @@ set: unpushed data is pinned (the limit is soft for it — you can always
 save work), only Swarm-confirmed blobs are evicted under pressure, and
 reading an evicted record transparently re-fetches and re-verifies it.
 This also closes the §7 read-trust gap for evicted reads: healed bytes
-are hashed against their reference. Needs swarmfs ≥ 0.5
-(`pip install "recordstore[local]"`); the design lives in swarmfs's
-`docs/localstore-design.md`.
+are hashed against their reference. Needs swarmfs — the `[local]`
+extra's floor is 0.7.0 (`pip install "recordstore[local]"`); the design
+lives in swarmfs's `docs/localstore-design.md`.
 
 The working set is yours to shape (0.18.0+): `store.pin("hot", "users/")`
 keeps everything under a prefix on disk no matter the eviction pressure
@@ -561,7 +561,7 @@ readers only at roots the network provably serves. And history is a
 choice, not a tax: every commit is a snapshot, confirmed history costs
 almost nothing locally (it evicts), but if you accumulate *unpushed*
 history offline, `store.squash_history()` collapses the lineage to the
-current root and frees the disk (swarmfs ≥ 0.6).
+current root and frees the disk.
 
 ### Durable blobs without Swarm
 
@@ -748,10 +748,12 @@ multi-release bets (e.g. the canonical-POT convergence track) live in the
   default against **your own Bee node** — which is the intended deployment —
   and the wrong trust model for a public gateway; don't point
   `BeeBytesStore` at one. When you need trust-free answers today, that is
-  exactly what `prove`/`verify_proof` (§2) are for. A verifying read mode
-  arrives with the local-first layer (see the repo roadmap's local-first
-  track and swarmfs's `docs/localstore-design.md`, *Verification and
-  trust*), which re-checks every blob it fetches back from the network.
+  exactly what `prove`/`verify_proof` (§2) are for — and, since 0.17.0,
+  what the local-first path (§3) does for every blob it fetches back from
+  the network: an evicted record heals only if the fetched bytes hash to
+  their reference. The plain `BeeBytesStore.get` path remains unverified
+  by design (swarmfs's `docs/localstore-design.md`, *Verification and
+  trust*, has the full trust story).
 - **Concurrency control is opt-in, and best-effort across a network.**
   `commit(reconcile=True)` (§5) makes concurrent writers converge — three-way
   merge and retry when the pointer moved under it — while plain `commit()` still

@@ -71,6 +71,15 @@ and nothing more:
   between these two published versions?" directly: `(key, mine, theirs)` per
   differing key, the same O(divergence) structural walk, so equal roots read
   nothing at all.
+- **Local-first** — `local_first_store(path, api_url)` stops the choice
+  between disk and Swarm: commits land on local disk instantly (offline is
+  the normal mode), a background worker pushes them to Swarm and *confirms*
+  arrival peer-to-peer, `sync()` is the certainty barrier, and local disk is
+  a budgeted working set — unpushed data is pinned, only Swarm-confirmed
+  blobs evict, evicted reads heal by verified re-fetch. Shape the working
+  set with `pin(name, prefix)` / `fetch(prefix)`; collapse local history
+  with `squash_history()`; a key whose bytes are temporarily unreachable
+  raises `RecordUnavailable`, never a false `KeyError`.
 - **Multi-writer, no lock server** — `commit(reconcile=True)` makes concurrent
   writers converge: if the pointer moved under you it three-way merges and
   retries instead of overwriting. Race-free in-process; best-effort across
@@ -108,12 +117,13 @@ dependencies are imported lazily — `requests` only by `BeeBytesStore`
 
 | Layer | What it does | Implementations |
 |---|---|---|
-| `BytesStore` | `put(bytes) → ref`, `get(ref) → bytes` | `MemoryBytesStore` (in-memory, testing), `DirBytesStore` (durable local directory), `FsspecBytesStore` (S3/GCS/HTTP/… via fsspec), `BeeBytesStore` (Swarm Bee node over `/bytes` — the blob endpoint, not the raw `/chunks/{address}` primitive) |
+| `BytesStore` | `put(bytes) → ref`, `get(ref) → bytes` | `MemoryBytesStore` (in-memory, testing), `DirBytesStore` (durable local directory), `FsspecBytesStore` (S3/GCS/HTTP/… via fsspec), `BeeBytesStore` (Swarm Bee node over `/bytes` — the blob endpoint, not the raw `/chunks/{address}` primitive), `CachedBytesStore` (byte-budgeted LRU wrapper over any of them), swarmfs's `LocalStore` (local-first store directory) |
 | trie (internal) | canonical persistent radix trie mapping keys to value blobs | — |
 | `RecordStore` | staging, `commit()` / `commit(reconcile=True)`, snapshots, sorted `keys()`/`items()`, three-way `merge()`, structural `diff()` | — |
 | `Pointer` | mutable name for the latest root | `MemoryPointer`, `FilePointer` (atomic local file), `SwarmFeedPointer` (owner-signed Swarm feed, over `swarm-bee`) |
 
 | `swarm_store(topic, ...)` | assembles the two Swarm pieces into a store | the one place Swarm is chosen: `BeeBytesStore` blobs **and** a `SwarmFeedPointer` head |
+| `local_first_store(path, api_url)` | disk now, Swarm in the background | swarmfs `LocalStore` + journal (the reflog) + background push/confirm; `sync()`, `sync_status()`, `pin`/`fetch`, `publish(pointer)`, `squash_history()` (`[local]` extra, swarmfs ≥ 0.7) |
 
 Nothing above `RecordStore` ever sees a stored blob or a trie node — and
 nothing below it needs to know Swarm exists unless you asked for it:
