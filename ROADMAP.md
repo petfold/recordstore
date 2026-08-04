@@ -69,7 +69,10 @@ transfer verbs and recorded lineage; both come from the shared layer.
   as thin adapters or direct-mode escape hatches.
   *Acceptance:* pull the network cable mid-workload — commits keep
   succeeding; reconnect — `sync()` returns and stewardship confirms every
-  root.
+  root. And no local regression: a localstore-backed commit at the default
+  durability (commit-boundary fsync batching, not L0's per-blob fsync) is
+  not meaningfully slower than `DirBytesStore` for a many-small-node
+  commit.
 - **R2 — Partial-replica controls.** Pin-by-key-prefix (one subtree walk →
   named pin), `fetch(prefix)` warm-up, structure-resident/values-remote
   mode (diff/merge million-key roots on a small disk), the distinct
