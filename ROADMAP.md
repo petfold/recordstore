@@ -7,6 +7,81 @@ this file is for larger bets that span several releases.
 
 ---
 
+## Local-first sync track (designed 2026-08-04, not yet scheduled)
+
+**Status: design agreed; the shared layer lands in swarmfs first.**
+Canonical design document: `../swarmfs/docs/localstore-design.md`
+(invariant, durability ladder, on-disk format, eviction policy, phases
+L0–L4). This section tracks only what changes *in recordstore*.
+
+The bet: stop making users choose one home for their blobs. Today a store
+lives in memory (forgets), on disk (doesn't publish), or on a Bee node
+(every read a round trip; every commit a network and postage liability, and
+a "successful" deferred upload still only means *the node* has it). The fix
+is git-shaped, not cache-shaped: commits always land on local disk
+instantly (offline is the normal mode), a background worker pushes to Swarm
+and *confirms* arrival, and local storage is a budgeted working set in
+which unpushed data is pinned and only network-confirmed data is evictable.
+The performance story rides along: local reads, push coalescing (orphaned
+intermediate blobs never uploaded — postage saved), offline BMT addressing.
+
+recordstore is already most of git — content-addressed blobs, structural
+sharing, `diff`, three-way `merge`, `Pointer` refs, and
+`DirBytesStore(addressing="swarm")` as the offline mirror. What it lacks is
+transfer verbs and recorded lineage; both come from the shared layer.
+
+### Guardrails
+
+- **`BytesStore` stays the contract.** The shared layer implements it; no
+  public-API break. Roots stay canonical — history/parentage lives in the
+  journal (the layer's reflog), **never** inside roots, or canonical
+  addressing and merge's ref-equality pruning die.
+- **`commit()` stays local-fast and never blocks on network or stamps.**
+  Certainty is explicit: `sync()` barrier + `status()` ladder
+  (committed → on-node → network-confirmed).
+- **The journal lags reality, never leads it** — bookkeeping may
+  under-claim durability, never over-claim. Only network-confirmed blobs
+  become evictable.
+- The shared layer never interprets blobs: recordstore supplies new-blob
+  lists at commit, priority hints (trie nodes = structure, values = data),
+  and pin-refs from its own subtree walks.
+
+### Phases
+
+- **R0 — Bounded caches (independent quick win, no dependency on the
+  shared layer).** The in-memory value-blob cache (`RecordStore.get`
+  currently re-fetches values on every read) and a bound on the
+  currently-unbounded `_Trie._cache`, both as byte-budgeted LRU. Shaped as
+  a wrapping `BytesStore` so it composes with any backend.
+  *Acceptance:* a stores-larger-than-RAM iteration test holds memory flat.
+- **R1 — Adopt `swarmfs.localstore` (after its L0/L1).**
+  Local-first commit to a store directory; auto-push on by default;
+  `sync()`, `status()`, push/pull/fetch verbs; the journal doubles as the
+  reflog, giving cross-session merge-base discovery (today `_reconcile`
+  only knows the base in-process). `BeeBytesStore`/`DirBytesStore` remain
+  as thin adapters or direct-mode escape hatches.
+  *Acceptance:* pull the network cable mid-workload — commits keep
+  succeeding; reconnect — `sync()` returns and stewardship confirms every
+  root.
+- **R2 — Partial-replica controls.** Pin-by-key-prefix (one subtree walk →
+  named pin), `fetch(prefix)` warm-up, structure-resident/values-remote
+  mode (diff/merge million-key roots on a small disk), the distinct
+  "exists, on Swarm, you're offline" error, and only-on-Swarm accounting
+  surfaced with batch TTLs.
+- **R3 — History retention policy.** Push-latest-only + the pinning
+  invariant quietly makes unpushed history a permanent disk commitment;
+  make retention explicit (old roots pushed or dropped by policy).
+
+### References
+
+- Design doc (canonical): `../swarmfs/docs/localstore-design.md`.
+- swarmfs roadmap: `../swarmfs/docs/roadmap.md` §v3.
+- Seams this builds on: `BytesStore` protocol, `_Trie._cache`,
+  `DirBytesStore(addressing="swarm")`, `RecordStore.merge`/`diff`,
+  `Pointer` — all in `src/recordstore/recordstore.py`.
+
+---
+
 ## Canonical-POT convergence track (experimental)
 
 **Status: experimental / research. Not scheduled against a release.**
