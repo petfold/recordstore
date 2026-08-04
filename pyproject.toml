@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "recordstore"
-version = "0.17.0"
+version = "0.18.0"
 description = "Versioned key-record store over a content-addressed bytes store (memory or Ethereum Swarm/Bee backends)"
 readme = "README.md"
 requires-python = ">=3.11"
@@ -28,8 +28,10 @@ fsspec = ["fsspec"]
 # 0.4.0 is the floor: earlier swarmfs has no StampManager.list_batches or
 # .buckets, so the inspection path would fail at runtime instead of install.
 stamps = ["swarmfs>=0.4.0"]
-# local_first_store: needs swarmfs's localstore/localsync modules (0.5.0+)
-local = ["swarmfs>=0.5.0"]
+# local_first_store needs swarmfs's localstore/localsync (0.5.0+);
+# squash_history needs rebase_root/gc_orphans (0.6.0+) — the extra states
+# the full-feature floor.
+local = ["swarmfs>=0.6.0"]
 swarm-addressing = ["swarmfs[feeds]"]
 feeds = ["swarm-bee"]
 test = ["pytest"]

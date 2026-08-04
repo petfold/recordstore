@@ -14,9 +14,8 @@ live-validated against Bee 2.8.1, confirmation p2p-native via stewardship
 — verified from the Bee source); recordstore R0 (bounded caches) and R1
 (`local_first_store`) released as 0.17.0 with swarmfs 0.5.0. R2
 (partial-replica controls + publication-after-confirmation) and R3
-(history retention via app-assisted squash) landed 2026-08-04 — in
-CHANGELOG [Unreleased], pending a swarmfs 0.6 release (`rebase_root`/
-`gc_orphans`). The track is feature-complete as designed; what remains
+(history retention via app-assisted squash) released as 0.18.0 with
+swarmfs 0.6.0. The track is feature-complete as designed; what remains
 lives in swarmfs (L4: scrub, only-on-Swarm accounting in status()).**
 Canonical design document: `../swarmfs/docs/localstore-design.md`
 (invariant, durability ladder, on-disk format, eviction policy, phases
