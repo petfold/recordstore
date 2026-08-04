@@ -324,7 +324,7 @@ Details worth knowing:
 | non-JSON-encodable value in `put` | `TypeError` / `ValueError` |
 | `NaN` / `Infinity` in a value | `ValueError` |
 | write on a read-only snapshot | `TypeError` |
-| blob missing from the bytes store | `KeyError` (from the backend) |
+| key exists but value bytes unreachable (evicted + offline; backend blob missing) | `RecordUnavailable` — deliberately **not** a `KeyError` |
 | unresolved merge conflict (no `resolver`) | `MergeConflict` (`.conflicts`) |
 | `reconcile` cannot land after `retries` | `RuntimeError` |
 | `prove` of a key with staged changes | `ValueError` |
@@ -546,9 +546,22 @@ reading an evicted record transparently re-fetches and re-verifies it.
 This also closes the §7 read-trust gap for evicted reads: healed bytes
 are hashed against their reference. Needs swarmfs ≥ 0.5
 (`pip install "recordstore[local]"`); the design lives in swarmfs's
-`docs/localstore-design.md`. Publishing the head to a Swarm *feed* is not
-wired into this path yet — it belongs after confirmation and is tracked
-as R2 on the roadmap.
+`docs/localstore-design.md`.
+
+The working set is yours to shape (0.18.0+): `store.pin("hot", "users/")`
+keeps everything under a prefix on disk no matter the eviction pressure
+(`unpin` releases); `store.fetch("users/")` warms a subtree back from
+Swarm before you go offline. When a record's bytes are unreachable — the
+key exists, its value is on Swarm, you have no network — reads raise
+`RecordUnavailable`, deliberately not a `KeyError`, so absence and
+unreachability can never be confused. Publishing to a Swarm feed follows
+*confirmation*: `store.publish(feed_pointer)` (or
+`local_first_store(..., publish_pointer=...)` to auto-publish) points
+readers only at roots the network provably serves. And history is a
+choice, not a tax: every commit is a snapshot, confirmed history costs
+almost nothing locally (it evicts), but if you accumulate *unpushed*
+history offline, `store.squash_history()` collapses the lineage to the
+current root and frees the disk (swarmfs ≥ 0.6).
 
 ### Durable blobs without Swarm
 

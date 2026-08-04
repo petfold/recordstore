@@ -12,10 +12,12 @@ this file is for larger bets that span several releases.
 **Status: shared layer L0+L1 shipped in swarmfs (property-tested,
 live-validated against Bee 2.8.1, confirmation p2p-native via stewardship
 — verified from the Bee source); recordstore R0 (bounded caches) and R1
-(`local_first_store`) implemented — see CHANGELOG [Unreleased]. R1 needs
-swarmfs >= 0.5 released before recordstore can release. Remaining: R2
-partial-replica controls (incl. feed publication after confirmation), R3
-history retention.**
+(`local_first_store`) released as 0.17.0 with swarmfs 0.5.0. R2
+(partial-replica controls + publication-after-confirmation) and R3
+(history retention via app-assisted squash) landed 2026-08-04 — in
+CHANGELOG [Unreleased], pending a swarmfs 0.6 release (`rebase_root`/
+`gc_orphans`). The track is feature-complete as designed; what remains
+lives in swarmfs (L4: scrub, only-on-Swarm accounting in status()).**
 Canonical design document: `../swarmfs/docs/localstore-design.md`
 (invariant, durability ladder, on-disk format, eviction policy, phases
 L0–L4). This section tracks only what changes *in recordstore*.
@@ -86,14 +88,24 @@ transfer verbs and recorded lineage; both come from the shared layer.
   durability (commit-boundary fsync batching, not L0's per-blob fsync) is
   not meaningfully slower than `DirBytesStore` for a many-small-node
   commit.
-- **R2 — Partial-replica controls.** Pin-by-key-prefix (one subtree walk →
-  named pin), `fetch(prefix)` warm-up, structure-resident/values-remote
-  mode (diff/merge million-key roots on a small disk), the distinct
-  "exists, on Swarm, you're offline" error, and only-on-Swarm accounting
-  surfaced with batch TTLs.
-- **R3 — History retention policy.** Push-latest-only + the pinning
-  invariant quietly makes unpushed history a permanent disk commitment;
-  make retention explicit (old roots pushed or dropped by policy).
+- **R2 — Partial-replica controls. ✅ 2026-08-04** — `pin(name, prefix)` /
+  `unpin` / `fetch(prefix)` over the new `_Trie.refs_under` walk;
+  `RecordUnavailable` (deliberately not a `KeyError`) for
+  exists-but-unreachable values, so `contains` can never answer a wrong
+  `False`; `publish(pointer)` + `publish_pointer=` auto-publication that
+  strictly follows network confirmation (nearest confirmed ancestor while
+  the head syncs). Structure-resident/values-remote needed no new code —
+  it is the eviction ordering (payload before structure) doing its job;
+  batch-TTL surfacing in `status()` stays with swarmfs L4.
+- **R3 — History retention. ✅ 2026-08-04** — `squash_history()`: the
+  trie walk re-lists the tip's full reachable set (only the app can — the
+  journal layer is blob-blind), swarmfs ≥ 0.6's `rebase_root` collapses
+  the lineage onto it, `gc_orphans` frees dropped history's exclusive
+  blobs. Dropped *unpushed* history is gone for good (that is the
+  explicit retention decision); pushed history stays on Swarm.
+  Policy layers (age-based, count-based) can build on the primitive
+  later if wanted; the default remains keep-everything — confirmed
+  history costs almost nothing locally because it evicts.
 
 ### References
 

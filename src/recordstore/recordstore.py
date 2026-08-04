@@ -66,6 +66,15 @@ class MergeConflict(Exception):
             f"unresolved merge conflict on {len(self.conflicts)} key(s): {shown}")
 
 
+class RecordUnavailable(Exception):
+    """The key exists under the committed root, but its value bytes are
+    unreachable right now — evicted from a local-first store with no
+    network to heal from, or missing from the backend. Deliberately NOT a
+    ``KeyError``: ``except KeyError`` (and ``contains``) must never
+    misread "temporarily unreachable" as "absent". The record comes back
+    when the store can reach Swarm again."""
+
+
 # ---------------------------------------------------------------------------
 # Canonical encoding
 # ---------------------------------------------------------------------------
@@ -1068,6 +1077,35 @@ class _Trie:
                 for byte in reversed(child_bytes):  # reverse: smallest pops first
                     stack.append((node.children[byte], full + bytes([byte])))
 
+    def refs_under(self, root: Optional[Ref],
+                   prefix: bytes = b"") -> Iterator[Tuple[str, Ref]]:
+        """Yield ``("node", ref)`` / ``("value", ref)`` for every blob
+        needed to read every key under `prefix`: the trie nodes on the
+        path from the root and in the prefix's subtree, plus the value
+        refs of the contained records. This is the working-set walk behind
+        pin-by-prefix, fetch warm-ups, and history squashing — the
+        application-side reachability the blob-blind journal layer cannot
+        compute itself."""
+        if root is None:
+            return
+        self._load_many([root])
+        stack = [(root, b"")]
+        while stack:
+            ref, acc = stack.pop()
+            node = self._load(ref)
+            full = acc + node.prefix
+            probe = min(len(full), len(prefix))
+            if full[:probe] != prefix[:probe]:
+                continue  # cannot contain the prefix: skip subtree
+            yield ("node", ref)
+            if node.value_ref is not None and full.startswith(prefix):
+                yield ("value", node.value_ref)
+            child_bytes = sorted(node.children)
+            if child_bytes:
+                self._load_many([node.children[b] for b in child_bytes])
+                for byte in child_bytes:
+                    stack.append((node.children[byte], full + bytes([byte])))
+
 
 # ---------------------------------------------------------------------------
 # Proofs: verifiable inclusion and absence against a root
@@ -1607,7 +1645,16 @@ class RecordStore:
         vref = self._trie.get(self._root, kb)
         if vref is None:
             raise KeyError(key)
-        return _decode_value(self._blobs.get(vref))
+        try:
+            return _decode_value(self._blobs.get(vref))
+        except (KeyError, OSError) as e:
+            # The key EXISTS — the trie names its value — so a blob-level
+            # failure here is unreachability (evicted + offline, backend
+            # loss), never absence. KeyError would lie to `contains` and
+            # to every `except KeyError` caller.
+            raise RecordUnavailable(
+                f"record {key!r} exists (value {vref[:16]}…) but its bytes "
+                f"are unreachable: {e}") from e
 
     def contains(self, key: str) -> bool:
         try:
@@ -2014,6 +2061,109 @@ class LocalFirstRecordStore(RecordStore):
         Swarm. See swarmfs's ``StoreStatus``."""
         return self.local.status()
 
+    # -- working-set controls (R2) --------------------------------------------
+
+    def _refs_under(self, prefix: str):
+        return self._trie.refs_under(self._root,
+                                     prefix.encode("utf-8") if prefix
+                                     else b"")
+
+    def pin(self, name: str, prefix: str = "") -> int:
+        """Hold every blob needed to read the keys under `prefix` — trie
+        nodes and values — against eviction, as named pin `name` ("always
+        keep users/ on this device"). Pins the *current committed root's*
+        subtree; re-pin after commits to track new data (a repeated name
+        replaces the earlier pin). Returns the number of pinned blobs;
+        `unpin(name)` releases them."""
+        refs = [ref for _, ref in self._refs_under(prefix)]
+        self.local.pin(name, refs)
+        return len(refs)
+
+    def unpin(self, name: str) -> None:
+        self.local.unpin(name)
+
+    def fetch(self, prefix: str = "") -> int:
+        """Warm-up: materialize locally everything needed to read the keys
+        under `prefix` ("make me offline-capable before the flight").
+        Walks heal on demand, so this works even when parts of the
+        structure itself were evicted. Returns the number of blobs fetched
+        back from Swarm; raises `RecordUnavailable`-adjacent errors from
+        the backend if the network is down."""
+        healed = 0
+        for _, ref in self._refs_under(prefix):
+            if not self.local.has_local(ref):
+                self.local.get(ref)  # verified re-fetch via the fetcher
+                healed += 1
+        return healed
+
+    # -- publication (R2) -------------------------------------------------------
+
+    def publish(self, pointer: Pointer, remote_name: str = "feed"
+                ) -> Optional[Ref]:
+        """Point `pointer` (e.g. a `SwarmFeedPointer`) at the newest
+        **network-confirmed** root on the current lineage, and record it
+        as the remote-tracking root. Publication deliberately follows
+        confirmation: a feed must never send readers to content the
+        network cannot serve yet. If the head is not confirmed, its
+        nearest confirmed ancestor is published (an older-but-servable
+        state). Returns the published root, or None when nothing on the
+        lineage is confirmed yet."""
+        root = self._root
+        while root is not None and not self.local.network_confirmed(root):
+            try:
+                root = self.local.parent_of(root)
+            except KeyError:
+                return None
+        if root is None:
+            return None
+        if self.local.remote_root(remote_name) != root:
+            pointer.set(root)
+            self.local.set_remote_root(remote_name, root)
+        return root
+
+    # -- history retention (R3) ---------------------------------------------------
+
+    def squash_history(self, gc: bool = True) -> dict:
+        """Collapse this replica's history to the current root — the
+        explicit retention decision for history that would otherwise stay
+        pinned (unpushed old roots are a permanent disk commitment under
+        the invariant).
+
+        App-assisted by design: the journal layer is blob-blind, so only
+        recordstore — which can walk its trie — knows the tip's full
+        reachable set; that set is re-listed and the lineage rebased onto
+        it. Afterwards the journal holds ONE root; dropped history's
+        exclusive blobs are orphans, deleted when `gc=True`. Swarm keeps
+        whatever was already pushed (nothing deletes from Swarm); dropped
+        history that was never pushed is gone for good. Returns
+        ``{"roots_dropped", "orphans_deleted", "bytes_freed"}``."""
+        if self._staged:
+            raise ValueError("commit or discard staged changes first")
+        root = self._root
+        if root is None:
+            raise ValueError("empty store: nothing to squash onto")
+        if not self.local.has_root(root):
+            raise ValueError(f"current root {root[:8]}… is not journaled")
+        if not hasattr(self.local, "rebase_root"):
+            raise RuntimeError(
+                "history squashing needs swarmfs >= 0.6 "
+                '(pip install -U "recordstore[local]")')
+        nodes, blobs = set(), set()
+        for kind, ref in self._refs_under(""):
+            blobs.add(ref)
+            if kind == "node":
+                nodes.add(ref)
+        before = len(self.local.status().roots)
+        self.local.rebase_root(root, sorted(blobs), structure=sorted(nodes))
+        stats = {"roots_dropped": before - 1,
+                 "orphans_deleted": 0, "bytes_freed": 0}
+        if gc:
+            count, freed = self.local.gc_orphans()
+            stats["orphans_deleted"], stats["bytes_freed"] = count, freed
+        return stats
+
+    # -- lifecycle -----------------------------------------------------------------
+
     def close(self) -> None:
         if self.syncer is not None:
             self.syncer.stop()
@@ -2032,6 +2182,7 @@ def local_first_store(path: str, api_url: Optional[str] = None, *,
                       cache_bytes: int = 64 * 1024 * 1024,
                       addressing: str = "swarm",
                       sync_policy=None, witness=None,
+                      publish_pointer: Optional[Pointer] = None,
                       node_cache_size: int = DEFAULT_NODE_CACHE_SIZE
                       ) -> LocalFirstRecordStore:
     """Open (or create) a local-first record store: commits go to local
@@ -2081,6 +2232,17 @@ def local_first_store(path: str, api_url: Optional[str] = None, *,
     blobs = CachedBytesStore(local, cache_bytes) if cache_bytes else local
     pointer = FilePointer(os.path.join(local.path, "HEAD"))
     root = pointer.get() if pointer.get() is not None else local.latest_root()
-    return LocalFirstRecordStore(blobs, local, syncer, root=root,
-                                 pointer=pointer,
-                                 node_cache_size=node_cache_size)
+    store = LocalFirstRecordStore(blobs, local, syncer, root=root,
+                                  pointer=pointer,
+                                  node_cache_size=node_cache_size)
+    if publish_pointer is not None:
+        if syncer is None:
+            raise ValueError("publish_pointer needs api_url: publication "
+                             "follows network confirmation")
+        # Publication rides confirmation: each confirmed rung re-tries the
+        # publish (listener exceptions are isolated by the journal layer,
+        # so a failed feed update is retried on the next confirmation).
+        local.add_listener(
+            lambda ev: store.publish(publish_pointer)
+            if ev.get("ev") == "confirmed" else None)
+    return store

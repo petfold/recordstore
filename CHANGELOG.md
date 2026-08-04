@@ -4,6 +4,43 @@ All notable changes to this project are documented here. The format is based on
 [Keep a Changelog](https://keepachangelog.com/), and this project adheres to
 [Semantic Versioning](https://semver.org/).
 
+## [Unreleased]
+
+### Added
+
+- **Working-set controls on local-first stores** (R2):
+  `store.pin(name, prefix)` holds every blob needed to read the keys
+  under a prefix — trie nodes and values, one subtree walk — against
+  eviction ("always keep `users/` on this device"); `unpin(name)`
+  releases. `store.fetch(prefix)` is the warm-up verb ("make me
+  offline-capable before the flight") — heals everything under the
+  prefix back from Swarm, idempotently.
+- **Publication follows confirmation** (R2): `store.publish(pointer)`
+  points a `SwarmFeedPointer` (or any pointer) at the newest
+  **network-confirmed** root on the current lineage — never at content
+  the network cannot serve yet; falls back to the nearest confirmed
+  ancestor while the head is still syncing. `local_first_store(...,
+  publish_pointer=...)` auto-publishes on each confirmation (failed feed
+  updates retry on the next one).
+- **History retention** (R3): `store.squash_history()` collapses this
+  replica's lineage to the current root — recordstore walks the trie and
+  re-lists the tip's full reachable set (the blob-blind journal layer
+  cannot), the journal is rebased onto it, and dropped history's
+  exclusive blobs are garbage-collected from disk. The explicit answer
+  to "unpushed old roots are pinned forever"; dropped unpushed history
+  is gone for good, pushed history stays on Swarm. Needs swarmfs ≥ 0.6.
+
+### Changed
+
+- **`RecordUnavailable` replaces the lying `KeyError`** (R2): when a key
+  *exists* under the committed root but its value bytes are unreachable
+  (evicted locally and offline; blob missing from the backend),
+  `get`/`contains` now raise `RecordUnavailable` — deliberately not a
+  `KeyError` subclass, so `except KeyError` and `contains()` can never
+  misread "temporarily unreachable" as "absent". Previously the
+  backend's `KeyError` leaked through and `contains` answered a wrong
+  `False`.
+
 ## [0.17.0] — 2026-08-04
 
 ### Added
