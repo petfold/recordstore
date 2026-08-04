@@ -42,6 +42,13 @@ transfer verbs and recorded lineage; both come from the shared layer.
 - **The journal lags reality, never leads it** — bookkeeping may
   under-claim durability, never over-claim. Only network-confirmed blobs
   become evictable.
+- **"Confirmed" means retrieve-and-verify, not a node's claim.** The rung
+  that unlocks eviction — deleting the local copy — must be backed by
+  fetching (a sample of) the blobs back through the network and checking
+  them against their references; tags/stewardship responses alone promote
+  no further than on-node. Eviction safety is this store's data safety, so
+  recordstore does not adopt the layer without this property (design doc,
+  *Verification and trust*).
 - The shared layer never interprets blobs: recordstore supplies new-blob
   lists at commit, priority hints (trie nodes = structure, values = data),
   and pin-refs from its own subtree walks.

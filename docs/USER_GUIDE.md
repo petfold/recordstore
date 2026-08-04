@@ -311,6 +311,9 @@ Details worth knowing:
   the verifier.
 - Proofs are O(depth): a handful of nodes even for one key among thousands,
   and they survive `json.dumps`/`loads` (they are designed to travel).
+- Proofs are the **trust-free path** — the only one. Ordinary reads trust
+  the bytes store's endpoint completely (see §7): `verify_proof` checks
+  every byte it returns, `store.get` checks nothing.
 
 ### Error summary
 
@@ -692,6 +695,18 @@ The near-term limitations and their incremental fixes are below. Larger,
 multi-release bets (e.g. the canonical-POT convergence track) live in the
 [repo roadmap](../ROADMAP.md).
 
+- **Ordinary reads are unverified — the Bee endpoint is trusted.**
+  `BeeBytesStore.get` returns what the node sends without re-hashing it
+  against the reference, so a compromised or lying endpoint could serve
+  wrong bytes undetected. Content-addressing makes every read *verifiable*;
+  recordstore just doesn't spend the CPU by default. This is the reasonable
+  default against **your own Bee node** — which is the intended deployment —
+  and the wrong trust model for a public gateway; don't point
+  `BeeBytesStore` at one. When you need trust-free answers today, that is
+  exactly what `prove`/`verify_proof` (§2) are for. A verifying read mode
+  arrives with the local-first layer (see the repo roadmap's local-first
+  track and swarmfs's `docs/localstore-design.md`, *Verification and
+  trust*), which re-checks every blob it fetches back from the network.
 - **Concurrency control is opt-in, and best-effort across a network.**
   `commit(reconcile=True)` (§5) makes concurrent writers converge — three-way
   merge and retry when the pointer moved under it — while plain `commit()` still
