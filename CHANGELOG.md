@@ -4,6 +4,22 @@ All notable changes to this project are documented here. The format is based on
 [Keep a Changelog](https://keepachangelog.com/), and this project adheres to
 [Semantic Versioning](https://semver.org/).
 
+## [0.18.2] — 2026-08-04
+
+### Added
+
+- **`docs/REFERENCE.md`** — the lookup half of the documentation split
+  (the User Guide stays the tutorial): definition-first tables of every
+  export, signature, error and extra, **pinned against the code by
+  `tests/test_reference.py`** — the Exports table must equal `__all__`,
+  every documented name must resolve, every documented parameter must
+  exist, and the version line must match `pyproject.toml`, so the
+  reference cannot silently rot and a release without the docs sweep
+  fails the suite. Also the right document to hand to an AI agent.
+- README/user-guide catch-up for the local-first work (feature list,
+  pieces table, present-tense trust note, current swarmfs floors), and
+  the repo-level `ONBOARDING.md`.
+
 ## [0.18.1] — 2026-08-04
 
 ### Changed
