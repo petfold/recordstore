@@ -137,9 +137,12 @@ store = swarm_store("my-notes", owner=addr)   # follow someone else's feed
 
 ## Documentation
 
-- **[User guide](docs/USER_GUIDE.md)** — concepts, full API, the canonicity
-  contract, running against a real Bee node, versioning patterns, error
-  handling, and current limitations.
+- **[User guide](docs/USER_GUIDE.md)** — the tutorial: concepts, the
+  canonicity contract, running against a real Bee node, versioning
+  patterns, error handling, and current limitations.
+- **[Reference](docs/REFERENCE.md)** — compact and definition-first: every
+  export, signature, error, and extra in tables, pinned against the code
+  by `tests/test_reference.py`. The right document to hand to an AI agent.
 
 ## Testing
 

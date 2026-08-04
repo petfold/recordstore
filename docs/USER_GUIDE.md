@@ -5,6 +5,13 @@ content-addressed bytes store. This guide covers the concepts, the full
 public API, the canonicity contract, running against a real Swarm/Bee node,
 common versioning patterns, and current limitations.
 
+It is a *tutorial*: it explains and walks through. When you already know
+what you're doing and just need to look something up — a signature, an
+error, an extra, a default — use the compact
+[`REFERENCE.md`](REFERENCE.md) instead (definition-first, no narrative,
+pinned against the code by the test suite; also the right document to
+hand to an AI agent).
+
 Everything documented here is importable from the top-level package:
 
 ```python
