@@ -4,6 +4,17 @@ All notable changes to this project are documented here. The format is based on
 [Keep a Changelog](https://keepachangelog.com/), and this project adheres to
 [Semantic Versioning](https://semver.org/).
 
+## [0.18.1] — 2026-08-04
+
+### Changed
+
+- The `[local]` extra's floor is now `swarmfs>=0.7.0`: no recordstore
+  code changed, but 0.7.0 carries swarmfs's fix for the transaction-exit
+  crash on fsspec < 2024.3.0 — the vintage Debian/Ubuntu LTS systems
+  actually run via dist-packages, which pip never upgrades when the old
+  version already satisfies a floor. Raising the floor is how existing
+  installs pick the fix up.
+
 ## [0.18.0] — 2026-08-04
 
 ### Added
