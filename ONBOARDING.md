@@ -45,6 +45,7 @@ retention, `scrub()` for bitrot (localstore).
 
 | Document | What it is |
 |---|---|
+| `recordstore/docs/REFERENCE.md`, `swarmfs/docs/REFERENCE.md` | **Start here as an agent**: definition-first tables of every export, signature, error and extra — pinned against the code by each repo's `tests/test_reference.py`, so they cannot rot. The user guides are the human tutorials. |
 | `swarmfs/docs/localstore-design.md` | The design: invariant, ladder, auto-push policy, verification/trust (incl. why confirmation is p2p-native — Bee's stewardship retrieves through the network, verified from its source), performance posture. |
 | `swarmfs/docs/localstore-format.md` | **Normative** on-disk format (blobs + append-only JSONL journal + disposable index). The format is the interop contract — a Go/JS implementation works from this file. The lag rule: journal events are appended only after the fact they record is true. |
 | `swarmfs/docs/roadmap.md` §v3 | Phase history L0–L4 with findings pinned per phase — read the findings; they are the sharp edges. |
