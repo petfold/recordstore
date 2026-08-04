@@ -518,6 +518,38 @@ both. Needs the extras: `pip install "recordstore[bee,feeds,stamps]"`
 stays backend-neutral — this factory is the single answer to "where is Swarm
 specified?".
 
+### Local-first: disk now, Swarm in the background (0.17.0+)
+
+The backends above make you choose one home for your blobs — memory
+forgets, disk doesn't publish, Bee makes every commit a network (and
+postage) liability. `local_first_store` stops the choosing:
+
+```python
+from recordstore import local_first_store
+
+store = local_first_store("~/.myapp/store", "http://localhost:1633")
+store.put("k", {"v": 1})
+store.commit()        # local disk, instant, works offline
+store.sync()          # optional barrier: confirmed ON the Swarm network
+print(store.sync_status())  # pinned vs evictable bytes, per-commit rungs
+```
+
+Commits always land on local disk and are recorded in the directory's
+journal; a background worker pushes them to Swarm and *confirms* arrival
+(Bee's stewardship check retrieves through the network peer-to-peer, so
+"confirmed" means the network has it, not just your node). Offline is the
+normal mode — commits never block on the network; certainty is on demand
+via `sync()`. With `max_bytes=` the directory becomes a budgeted working
+set: unpushed data is pinned (the limit is soft for it — you can always
+save work), only Swarm-confirmed blobs are evicted under pressure, and
+reading an evicted record transparently re-fetches and re-verifies it.
+This also closes the §7 read-trust gap for evicted reads: healed bytes
+are hashed against their reference. Needs swarmfs ≥ 0.5
+(`pip install "recordstore[local]"`); the design lives in swarmfs's
+`docs/localstore-design.md`. Publishing the head to a Swarm *feed* is not
+wired into this path yet — it belongs after confirmation and is tracked
+as R2 on the roadmap.
+
 ### Durable blobs without Swarm
 
 `MemoryBytesStore` is ephemeral and `BeeBytesStore` needs a node, so two

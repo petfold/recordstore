@@ -639,6 +639,43 @@ class CachedBytesStore:
         return getattr(self.inner, name)
 
 
+class _RecordingStore:
+    """Forwards to `inner`, recording the ref of every blob written through
+    it — how `commit()` learns exactly which blobs a commit created, which
+    a local-first backend's journal wants (`commit_root`). Trie copy-on-
+    write means only changed paths and new values are written, so the
+    recorded set is naturally the commit's new-blob list."""
+
+    def __init__(self, inner: BytesStore):
+        self.inner = inner
+        self.refs: set = set()
+
+    def put(self, data: bytes) -> Ref:
+        ref = self.inner.put(data)
+        self.refs.add(ref)
+        return ref
+
+    def put_many(self, datas: Iterable[bytes]) -> List[Ref]:
+        datas = list(datas)
+        put_many = getattr(self.inner, "put_many", None)
+        refs = (put_many(datas) if put_many
+                else [self.inner.put(d) for d in datas])
+        self.refs.update(refs)
+        return refs
+
+    def get(self, ref: Ref) -> bytes:
+        return self.inner.get(ref)
+
+    def get_many(self, refs: Iterable[Ref]) -> Dict[Ref, bytes]:
+        get_many = getattr(self.inner, "get_many", None)
+        if get_many is not None:
+            return get_many(refs)
+        return {r: self.inner.get(r) for r in refs}
+
+    def __getattr__(self, name):
+        return getattr(self.inner, name)
+
+
 # ---------------------------------------------------------------------------
 # Persistent compacted radix trie (canonical)
 #
@@ -1747,6 +1784,24 @@ class RecordStore:
 
     # -- commit ---------------------------------------------------------------
 
+    def _journal_commit(self, base: Optional[Ref], new: Optional[Ref],
+                        vrec: "_RecordingStore",
+                        nrec: "_RecordingStore") -> None:
+        """Record the commit in a local-first backend's journal (duck-typed:
+        the backend has `commit_root`, e.g. swarmfs's LocalStore). The
+        recorders captured exactly the blobs this commit wrote — values and
+        trie nodes separately, so nodes carry the `structure` eviction
+        hint. Skipped when the root didn't change or canonical addressing
+        brought the store back to an already-journaled state (an emptied
+        store — root None — cannot be journaled either: the format has no
+        null-root event; keep a pointer for the head in that case)."""
+        inner = self._blobs
+        if new is None or new == base or inner.has_root(new):
+            return
+        parent = base if (base is None or inner.has_root(base)) else None
+        inner.commit_root(new, parent, sorted(vrec.refs | nrec.refs),
+                          structure=sorted(nrec.refs - vrec.refs))
+
     def _build_root(self, base: Optional[Ref]) -> Optional[Ref]:
         """Apply the staged changes on top of `base` and return the new root.
         Value blobs go up front (concurrently if supported); trie nodes are
@@ -1792,12 +1847,28 @@ class RecordStore:
         if self._readonly:
             raise TypeError("read-only snapshot")
         base = self._root
-        new = self._build_root(base)
-        if self._pointer is not None:
-            if reconcile:
-                new = self._reconcile(base, new, resolver, retries)
-            else:
-                self._pointer.set(new)
+        inner = self._blobs
+        journaled = hasattr(inner, "commit_root")  # local-first backend?
+        vrec = nrec = None
+        if journaled:
+            # Record which blobs this commit writes — values through
+            # self._blobs, trie nodes through the trie's handle — so the
+            # journal event can list them (and classify the nodes as
+            # `structure`). The recorders forward everything else.
+            vrec, nrec = _RecordingStore(inner), _RecordingStore(inner)
+            self._blobs, self._trie._blobs = vrec, nrec
+        try:
+            new = self._build_root(base)
+            if self._pointer is not None:
+                if reconcile:
+                    new = self._reconcile(base, new, resolver, retries)
+                else:
+                    self._pointer.set(new)
+        finally:
+            if journaled:
+                self._blobs, self._trie._blobs = inner, inner
+        if journaled:
+            self._journal_commit(base, new, vrec, nrec)
         self._staged.clear()
         self._root = new
         return new
@@ -1901,3 +1972,115 @@ class RecordStore:
         finally:
             trie._reset_buffer()
         return root
+
+
+# ---------------------------------------------------------------------------
+# Local-first: RecordStore over a swarmfs localstore directory
+# ---------------------------------------------------------------------------
+
+class LocalFirstRecordStore(RecordStore):
+    """A RecordStore whose backend is a local-first store directory —
+    create it with :func:`local_first_store`.
+
+    Commits land on local disk instantly (offline is the normal mode) and
+    are recorded in the store directory's journal — the reflog: lineage,
+    durability rungs, everything `sync_status()` reports. When opened with
+    an ``api_url``, a background syncer pushes commits to Swarm and
+    confirms them peer-to-peer; ``sync()`` is the blocking certainty
+    barrier ("my data is really out there"). Reads of locally evicted
+    blobs heal transparently by verified re-fetch.
+    """
+
+    def __init__(self, bytes_store, local, syncer=None, **kw):
+        super().__init__(bytes_store, **kw)
+        #: The underlying swarmfs LocalStore (journal, budget, pins).
+        self.local = local
+        #: The background pusher, or None when opened without api_url.
+        self.syncer = syncer
+
+    def sync(self, timeout: Optional[float] = None) -> None:
+        """Block until every commit is network-confirmed — the fsync of
+        the durability ladder. TimeoutError (naming the last sync error)
+        if `timeout` passes first."""
+        if self.syncer is None:
+            raise RuntimeError(
+                "this store was opened without api_url — local-only; "
+                "reopen with api_url=... to sync to Swarm")
+        self.syncer.sync(timeout)
+
+    def sync_status(self):
+        """The local-first store's status: bytes pinned (unpushed) vs
+        evictable, each root's durability rung, blobs living only on
+        Swarm. See swarmfs's ``StoreStatus``."""
+        return self.local.status()
+
+    def close(self) -> None:
+        if self.syncer is not None:
+            self.syncer.stop()
+        self.local.close()
+
+    def __enter__(self) -> "LocalFirstRecordStore":
+        return self
+
+    def __exit__(self, *exc) -> None:
+        self.close()
+
+
+def local_first_store(path: str, api_url: Optional[str] = None, *,
+                      stamp: str = "auto",
+                      max_bytes: Optional[int] = None,
+                      cache_bytes: int = 64 * 1024 * 1024,
+                      addressing: str = "swarm",
+                      sync_policy=None, witness=None,
+                      node_cache_size: int = DEFAULT_NODE_CACHE_SIZE
+                      ) -> LocalFirstRecordStore:
+    """Open (or create) a local-first record store: commits go to local
+    disk instantly, a background worker pushes them to Swarm and confirms
+    arrival, and local storage behaves as a budgeted working set.
+
+    The one call for the whole arrangement::
+
+        store = local_first_store("~/.myapp/store", "http://localhost:1633")
+        store.put("k", {"v": 1})
+        store.commit()          # local, instant, offline-safe
+        store.sync()            # optional barrier: confirmed on Swarm
+
+    Without ``api_url`` the store is local-only (commits journal as usual
+    and push later, when reopened with an ``api_url``). ``max_bytes``
+    budgets the directory — unpushed data is pinned and the limit is soft
+    for it; only Swarm-confirmed blobs are evicted under pressure, and
+    reads of evicted blobs heal by verified re-fetch. ``cache_bytes``
+    sizes the in-memory blob cache (0 disables). ``stamp``/``sync_policy``
+    /``witness`` pass through to swarmfs's ``BeeRemote``/``Syncer``.
+
+    Head resolution: the journal records lineage; a ``HEAD`` pointer file
+    in the directory tracks the current root (needed because canonical
+    addressing means returning to a previous state re-uses its old root,
+    which the append-only journal deliberately refuses to duplicate).
+
+    Requires swarmfs >= 0.5 (``pip install "recordstore[local]"``).
+    Feed publication is not wired here yet — publishing a head to a Swarm
+    feed belongs *after* confirmation, and lands with the R2 phase.
+    """
+    try:
+        from swarmfs.localstore import LocalStore
+    except ImportError as e:
+        raise ImportError(
+            "local_first_store needs swarmfs with its localstore module "
+            '(>= 0.5): pip install "recordstore[local]"') from e
+    if api_url is not None and addressing != "swarm":
+        raise ValueError(
+            'pushing to Swarm requires addressing="swarm" (the push '
+            "asserts the node returns the locally computed reference)")
+    local = LocalStore(path, addressing=addressing, max_bytes=max_bytes)
+    syncer = None
+    if api_url is not None:
+        from swarmfs.localsync import BeeRemote, Syncer
+        remote = BeeRemote(api_url, stamp=stamp)
+        syncer = Syncer(local, remote, sync_policy, witness=witness).start()
+    blobs = CachedBytesStore(local, cache_bytes) if cache_bytes else local
+    pointer = FilePointer(os.path.join(local.path, "HEAD"))
+    root = pointer.get() if pointer.get() is not None else local.latest_root()
+    return LocalFirstRecordStore(blobs, local, syncer, root=root,
+                                 pointer=pointer,
+                                 node_cache_size=node_cache_size)

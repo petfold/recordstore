@@ -28,6 +28,9 @@ fsspec = ["fsspec"]
 # 0.4.0 is the floor: earlier swarmfs has no StampManager.list_batches or
 # .buckets, so the inspection path would fail at runtime instead of install.
 stamps = ["swarmfs>=0.4.0"]
+# local_first_store: needs swarmfs's localstore/localsync modules (0.5+,
+# unreleased at the time of writing — install swarmfs from source until then)
+local = ["swarmfs>=0.5.0"]
 swarm-addressing = ["swarmfs[feeds]"]
 feeds = ["swarm-bee"]
 test = ["pytest"]

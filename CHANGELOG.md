@@ -4,6 +4,40 @@ All notable changes to this project are documented here. The format is based on
 [Keep a Changelog](https://keepachangelog.com/), and this project adheres to
 [Semantic Versioning](https://semver.org/).
 
+## [Unreleased]
+
+### Added
+
+- **Local-first stores** (`local_first_store(path, api_url=None, ...)` →
+  `LocalFirstRecordStore`): commits land on local disk instantly and are
+  recorded — with their exact new-blob lists, trie nodes classified as
+  eviction-priority `structure` — in a swarmfs localstore journal (the
+  reflog); a background syncer pushes them to Swarm and confirms arrival
+  peer-to-peer (Bee's stewardship retrieves through the network, verified
+  from source), `sync()` is the blocking certainty barrier, and local disk
+  is a budgeted working set: unpushed data is pinned (soft limit), only
+  Swarm-confirmed blobs evict, and reads of evicted blobs heal by verified
+  re-fetch. Offline is the normal mode — pulling the network mid-workload
+  never blocks a commit. A `HEAD` pointer file keeps the current root
+  across reopens (canonical addressing means returning to a prior state
+  re-uses its old root, which the append-only journal refuses to
+  duplicate). Requires swarmfs >= 0.5 (`recordstore[local]`); design in
+  swarmfs `docs/localstore-design.md`, phases in ROADMAP (R1).
+  Generic seam: any BytesStore exposing `commit_root`/`has_root` gets the
+  journal integration — `commit()` records blobs through internal
+  recording wrappers, so merge/reconcile writes are captured too.
+- **`CachedBytesStore(inner, max_bytes=64MB)`** — byte-budgeted in-memory
+  LRU in front of any backend; value blobs were previously re-fetched on
+  every read. Unknown attributes delegate to the inner store. (R0)
+
+### Changed
+
+- The decoded trie-node cache is now bounded
+  (`RecordStore(node_cache_size=65536)` default) instead of growing
+  without limit; commit-scoped pending placeholders are exempt from
+  eviction, so hostile bounds never break a commit. Stores larger than
+  RAM iterate flat. (R0)
+
 ## [0.16.0] — 2026-08-01
 
 ### Added

@@ -7,9 +7,15 @@ this file is for larger bets that span several releases.
 
 ---
 
-## Local-first sync track (designed 2026-08-04, not yet scheduled)
+## Local-first sync track (designed 2026-08-04; R0+R1 landed 2026-08-04)
 
-**Status: design agreed; the shared layer lands in swarmfs first.**
+**Status: shared layer L0+L1 shipped in swarmfs (property-tested,
+live-validated against Bee 2.8.1, confirmation p2p-native via stewardship
+— verified from the Bee source); recordstore R0 (bounded caches) and R1
+(`local_first_store`) implemented — see CHANGELOG [Unreleased]. R1 needs
+swarmfs >= 0.5 released before recordstore can release. Remaining: R2
+partial-replica controls (incl. feed publication after confirmation), R3
+history retention.**
 Canonical design document: `../swarmfs/docs/localstore-design.md`
 (invariant, durability ladder, on-disk format, eviction policy, phases
 L0–L4). This section tracks only what changes *in recordstore*.
@@ -55,13 +61,20 @@ transfer verbs and recorded lineage; both come from the shared layer.
 
 ### Phases
 
-- **R0 — Bounded caches (independent quick win, no dependency on the
-  shared layer).** The in-memory value-blob cache (`RecordStore.get`
+- **R0 — Bounded caches. ✅ 2026-08-04** (CHANGELOG [Unreleased]). The in-memory value-blob cache (`RecordStore.get`
   currently re-fetches values on every read) and a bound on the
   currently-unbounded `_Trie._cache`, both as byte-budgeted LRU. Shaped as
   a wrapping `BytesStore` so it composes with any backend.
   *Acceptance:* a stores-larger-than-RAM iteration test holds memory flat.
-- **R1 — Adopt `swarmfs.localstore` (after its L0/L1).**
+- **R1 — Adopt `swarmfs.localstore`. ✅ 2026-08-04** — `local_first_store()`
+  / `LocalFirstRecordStore`; both acceptance tests hold (cable-pull and
+  DirBytesStore commit-latency parity). *Findings:* a `HEAD` pointer file
+  is required beside the journal — canonicity means returning to a prior
+  state re-uses its root, which the append-only journal refuses to
+  re-record, so `latest_root()` alone misreports the head; and an emptied
+  store (root `None`) cannot be journaled at all (no null-root event in
+  the format) — HEAD carries that case too. Feed publication is *not*
+  wired (belongs after confirmation → R2). Original plan for reference:
   Local-first commit to a store directory; auto-push on by default;
   `sync()`, `status()`, push/pull/fetch verbs; the journal doubles as the
   reflog, giving cross-session merge-base discovery (today `_reconcile`
