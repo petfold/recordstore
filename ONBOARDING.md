@@ -39,7 +39,10 @@ The durability ladder is `committed → pushed (on-node) → network-confirmed`;
 `sync_status()` shows every root's rung, pinned vs evictable bytes, and
 per-batch expiry estimates. Working-set controls: `pin(name, prefix)` /
 `fetch(prefix)` (recordstore), `squash_history()` for local history
-retention, `scrub()` for bitrot (localstore).
+retention, `scrub()` for bitrot (localstore). Version navigation is
+separate from that ladder: `history()`/`undo()`/`redo()`/`checkout()` walk
+the **pointer's timeline** (the branch), while the journal keeps every root
+ever committed (the reflog).
 
 ## Where the truth lives (read in this order)
 

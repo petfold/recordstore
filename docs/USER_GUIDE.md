@@ -808,6 +808,15 @@ multi-release bets (e.g. the canonical-POT convergence track) live in the
   their reference. The plain `BeeBytesStore.get` path remains unverified
   by design (swarmfs's `docs/localstore-design.md`, *Verification and
   trust*, has the full trust story).
+- **The version timeline is per-replica, and best-effort under racing
+  processes.** `history()`/`undo()`/`redo()` (§5) read the timeline a pointer
+  keeps beside itself, so they describe *this* replica: another machine
+  following the same feed has its own line, and an undo does not travel through
+  a `merge` (merge only ever adds, so a peer re-adds what you undid). Two bare
+  processes committing at the same instant can lose a timeline *entry* the same
+  way they can lose a pointer update — no data is lost with it, since every root
+  stays readable by reference, and a local-first store serializes its writers
+  with a lock. `keep_history=False` on `FilePointer` opts out entirely.
 - **Concurrency control is opt-in, and best-effort across a network.**
   `commit(reconcile=True)` (§5) makes concurrent writers converge — three-way
   merge and retry when the pointer moved under it — while plain `commit()` still

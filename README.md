@@ -24,6 +24,23 @@ list(store.keys("users/"))     # ['users/alice', 'users/bob']
 snapshot = RecordStore.at(root, blobs)   # frozen view of that version
 ```
 
+A store remembers the versions it has been through, so undo needs no diff
+replay — a root *is* the state, and going back is pointing back:
+
+```python
+from recordstore import DirBytesStore, FilePointer
+
+store = RecordStore(DirBytesStore("blobs"), pointer=FilePointer("root"))
+store.put("users/alice", {"name": "Alice"}); store.commit(message="add alice")
+store.put("users/bob", {"name": "Bob"});     store.commit(message="add bob")
+
+for v in store.history():      # newest first, `*`-style current flag included
+    print(v.root[:12], v.at, v.message, v.current)
+
+store.undo()                   # back to the version without bob
+store.redo()                   # forward again
+```
+
 Concurrent writers converge without a lock server — if the shared pointer
 moved under a commit, it three-way merges and retries:
 
@@ -71,6 +88,15 @@ and nothing more:
   between these two published versions?" directly: `(key, mine, theirs)` per
   differing key, the same O(divergence) structural walk, so equal roots read
   nothing at all.
+- **Undo, redo, and a version log** — a pointer remembers where it has been, so
+  `history()` lists the states this replica has held (newest first, with the
+  optional `commit(message=…)` label), `undo()`/`redo()` step along that line,
+  `checkout(root)` jumps to one, and `status()` says what is possible. No diff is
+  replayed and nothing is recovered: a root *is* the state, so going back is
+  *pointing* back. Editor semantics — a commit after an undo abandons the redo
+  tail — with a local-first store's journal as the deeper audit (this timeline is
+  the branch, the journal is the reflog). A message labels a transition and is
+  never part of the content, so equal content still commits to equal roots.
 - **Local-first** — `local_first_store(path, api_url)` stops the choice
   between disk and Swarm: commits land on local disk instantly (offline is
   the normal mode), a background worker pushes them to Swarm and *confirms*
@@ -126,7 +152,8 @@ dependencies are imported lazily — `requests` only by `BeeBytesStore`
 | `BytesStore` | `put(bytes) → ref`, `get(ref) → bytes` | `MemoryBytesStore` (in-memory, testing), `DirBytesStore` (durable local directory), `FsspecBytesStore` (S3/GCS/HTTP/… via fsspec), `BeeBytesStore` (Swarm Bee node over `/bytes` — the blob endpoint, not the raw `/chunks/{address}` primitive), `CachedBytesStore` (byte-budgeted LRU wrapper over any of them), swarmfs's `LocalStore` (local-first store directory) |
 | trie (internal) | canonical persistent radix trie mapping keys to value blobs | — |
 | `RecordStore` | staging, `commit()` / `commit(reconcile=True)`, snapshots, sorted `keys()`/`items()`, three-way `merge()`, structural `diff()` | — |
-| `Pointer` | mutable name for the latest root | `MemoryPointer`, `FilePointer` (atomic local file), `SwarmFeedPointer` (owner-signed Swarm feed, over `swarm-bee`) |
+| `RecordStore` (history) | `history()`, `undo()`, `redo()`, `checkout(root)`, `status()` — where this replica has been, and going back | — |
+| `Pointer` | mutable name for the latest root, and the timeline of the roots it has held | `MemoryPointer`, `FilePointer` (atomic local file + a `.timeline` sibling), `SwarmFeedPointer` (owner-signed Swarm feed, over `swarm-bee`) |
 
 | `swarm_store(topic, ...)` | assembles the two Swarm pieces into a store | the one place Swarm is chosen: `BeeBytesStore` blobs **and** a `SwarmFeedPointer` head |
 | `local_first_store(path, api_url)` | disk now, Swarm in the background | swarmfs `LocalStore` + journal (the reflog) + background push/confirm; `sync()`, `sync_status()`, `pin`/`fetch`, `publish(pointer)`, `squash_history()` (`[local-first-swarm]` extra, swarmfs ≥ 0.9) |
