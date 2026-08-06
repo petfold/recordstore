@@ -8,7 +8,9 @@ All notable changes to this project are documented here. The format is based on
 
 ### Added
 
-- **Undo, redo, and looking at where a store has been.** The mechanism was
+- **Undo, redo, and looking at where a store has been.** New methods on the
+  existing `RecordStore`; the only change to an existing signature is
+  `commit()`'s new optional `message=`. The mechanism was
   already here and unnamed: a root *is* the state, so every past state stays
   readable and going back is *pointing* back, not recovering anything. What was
   missing was the ability to say "the previous one" — a store knew where it was
@@ -34,8 +36,9 @@ All notable changes to this project are documented here. The format is based on
     one with no extra wiring — its `HEAD` is a `FilePointer`. `MemoryPointer`
     keeps the same timeline in memory. A pointer that keeps none makes `undo()`
     explain itself rather than quietly do nothing.
-  - **`commit(message=...)`** — an optional label on the transition, exported as
-    `Version.message`. **Deliberately not part of the content**, which is the one
+  - **`commit()` gains a keyword-only `message=`** (the method itself is not
+    new) — an optional label on the transition, read back as `Version.message`.
+    **Deliberately not part of the content**, which is the one
     place the git analogy breaks and it is load-bearing: a git commit hashes its
     message, so the same change described differently is a different commit,
     while a root here hashes state alone — which is what makes equal content
