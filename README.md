@@ -211,13 +211,22 @@ for the full comparison.
 
 ## Status
 
-Extracted from [petfold/ontodag](https://github.com/petfold/ontodag)
-(July 2026) with history preserved; validated against a live Bee 2.8.1
-light node on Gnosis mainnet (roundtrips, canonical roots on real BMT
-references, network retrievability). `SwarmFeedPointer` (owner-signed Swarm
-feed, over `swarm-bee`) landed in v0.4.0; three-way `merge` in v0.8.0;
-auto-reconciling `commit(reconcile=True)` in v0.9.0; a best-effort feed
-`compare_and_set` (cross-process reconcile) in v0.10.0. Known gaps — a Swarm
-feed has no atomic index claim, so exactly-simultaneous same-index writes can
-still race (in-process reconcile is race-free); one blob per record — are
-detailed in the [user guide](docs/USER_GUIDE.md#limitations-and-roadmap).
+**Current release: 0.20.1** (2026-08-06). Extracted from
+[petfold/ontodag](https://github.com/petfold/ontodag) (July 2026) with history
+preserved; validated against a live Bee 2.8.1 light node on Gnosis mainnet
+(roundtrips, canonical roots on real BMT references, network retrievability) —
+the whole suite, live tests included, is **183 passed / 0 skipped** with
+`BEE_API` set.
+
+Landmarks: `SwarmFeedPointer` (owner-signed Swarm feed, over `swarm-bee`) in
+v0.4.0; three-way `merge` in v0.8.0; auto-reconciling `commit(reconcile=True)` in
+v0.9.0; a best-effort feed `compare_and_set` (cross-process reconcile) in
+v0.10.0; `prove`/`verify_proof` in v0.16.0; local-first stores in v0.17.0; and
+**undo/redo/`history()`/`checkout()` in v0.20.0** — the version timeline a
+pointer keeps beside itself. `CHANGELOG.md` is the authoritative history.
+
+Known gaps — a Swarm feed has no atomic index claim, so exactly-simultaneous
+same-index writes can still race (in-process reconcile is race-free); one blob
+per record; the version timeline is per-replica and an undo does not travel
+through a `merge` — are detailed in the
+[user guide](docs/USER_GUIDE.md#limitations-and-roadmap).
