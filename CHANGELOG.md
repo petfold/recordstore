@@ -4,6 +4,23 @@ All notable changes to this project are documented here. The format is based on
 [Keep a Changelog](https://keepachangelog.com/), and this project adheres to
 [Semantic Versioning](https://semver.org/).
 
+## [0.20.1] — 2026-08-06
+
+### Documentation
+
+- **The README describes undo.** 0.20.0 shipped with the reference, the user
+  guide and this file updated but *not* the README — which is the PyPI long
+  description, so the page for 0.20.0 described the package without its headline
+  feature. Docs-before-publish is the rule; this is the repair, and the reason
+  for a patch release with no code change: a stale landing page is what people
+  read first. The README now has undo/redo/history in *Why*, a runnable snippet,
+  and timeline rows in the pieces table; ONBOARDING distinguishes the pointer's
+  timeline (the branch) from the journal (the reflog); and the user guide's
+  limitations section states what belongs with the feature — the timeline is
+  per-replica, an undo does not travel through a `merge`, and two racing bare
+  processes can lose a timeline *entry* (never data: every root stays readable by
+  reference).
+
 ## [0.20.0] — 2026-08-06
 
 ### Added
