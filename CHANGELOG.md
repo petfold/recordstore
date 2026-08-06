@@ -4,6 +4,50 @@ All notable changes to this project are documented here. The format is based on
 [Keep a Changelog](https://keepachangelog.com/), and this project adheres to
 [Semantic Versioning](https://semver.org/).
 
+## [0.20.0] — 2026-08-06
+
+### Added
+
+- **Undo, redo, and looking at where a store has been.** The mechanism was
+  already here and unnamed: a root *is* the state, so every past state stays
+  readable and going back is *pointing* back, not recovering anything. What was
+  missing was the ability to say "the previous one" — a store knew where it was
+  and not where it had been.
+  - **`RecordStore.history(limit=None)`** → `Version(root, at, message,
+    current)`, newest first. The `git log` of a store, except every entry is a
+    whole state: `RecordStore.at(entry.root, blobs)` reopens any of them exactly.
+  - **`RecordStore.undo()` / `redo()`** — editor semantics, not a rewrite: a
+    line of states plus a position in it. Nothing is destroyed, the pointer
+    moves, staged changes are dropped ("the state you asked for is the state you
+    get"), and a commit made after an undo abandons the redo tail — as typing
+    after undo does, and as git does to a branch. An abandoned root stays
+    readable by ref; a local-first store's journal remains the deeper audit
+    (git's reflog to this timeline's branch).
+  - **`RecordStore.checkout(root)`** — jump to a state the timeline holds, and
+    refuse any other root. Pointing a store at content it does not have is how a
+    "restored" store fails later, on the first read, instead of here.
+  - **`RecordStore.status()`** — `{root, staged, readonly, history, position,
+    undoable, redoable}`: the `git status` of a store, including how much redo
+    could replay.
+  - **`FilePointer(path, keep_history=True)`** keeps a `<path>.timeline` JSON
+    sibling, so this works for a plain `rs:`-style store *and* for a local-first
+    one with no extra wiring — its `HEAD` is a `FilePointer`. `MemoryPointer`
+    keeps the same timeline in memory. A pointer that keeps none makes `undo()`
+    explain itself rather than quietly do nothing.
+  - **`commit(message=...)`** — an optional label on the transition, exported as
+    `Version.message`. **Deliberately not part of the content**, which is the one
+    place the git analogy breaks and it is load-bearing: a git commit hashes its
+    message, so the same change described differently is a different commit,
+    while a root here hashes state alone — which is what makes equal content
+    converge to one root, dedup structurally, and merge without conflict. A
+    message is a local annotation; attribution that has to travel belongs in a
+    signed record about the claim.
+  - A commit that changed nothing is **not** a state: it lands on the root it
+    started from, and recording it would put two identical entries in the line
+    and make `undo` look broken. Consumers that commit after every command (the
+    `odag` CLI does) depend on this.
+  - `Version` is exported.
+
 ## [0.19.0] — 2026-08-04
 
 ### Changed

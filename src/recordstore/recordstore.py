@@ -40,7 +40,8 @@ import time
 import warnings
 from collections import OrderedDict
 from concurrent.futures import ThreadPoolExecutor
-from typing import Dict, Iterable, Iterator, List, Optional, Protocol, Tuple
+from typing import (Dict, Iterable, Iterator, List, NamedTuple, Optional,
+                    Protocol, Tuple)
 
 Ref = str  # hex-encoded reference to a stored blob
 
@@ -1225,14 +1226,112 @@ class Pointer(Protocol):
     def set(self, root: Ref) -> None: ...
 
 
-class MemoryPointer:
+class Version(NamedTuple):
+    """One state this store has been in — a row of `RecordStore.history()`.
+
+    `root` is the content address, so it is the whole state: `RecordStore.at`
+    reopens it exactly. `at` and `message` are **local annotations**, recorded
+    beside the pointer and deliberately outside the content — see
+    `RecordStore.commit`."""
+
+    root: Ref
+    at: Optional[str] = None            # ISO-8601 UTC, when this replica got here
+    message: Optional[str] = None
+    current: bool = False               # is the pointer here now?
+
+
+class _Timeline:
+    """Where a pointer has been, and where it is now.
+
+    `history_enabled` is the capability a store asks about: a pointer that keeps
+    no timeline must make `undo` explain itself rather than quietly do nothing.
+
+    The undo/redo model, and it is an editor's rather than a journal's: a list
+    of states in the order they were reached, plus a position in it. Moving the
+    position is undo/redo; committing a new state truncates anything ahead of
+    the position and appends, so a new commit after an undo abandons the redo
+    tail — exactly as typing after undo does, and as git does to a branch.
+
+    Deliberately separate from a local-first store's journal, which keeps
+    *every* root ever committed and their parent links. That is the deeper
+    audit (git's reflog to this timeline's branch); an abandoned root stays
+    readable by ref, since nothing content-addressed is ever destroyed.
+    """
+
+    history_enabled = True
+
+    def __init__(self):
+        self._line: List[dict] = []
+        self._at = -1
+
+    # -- storage seam: subclasses persist, this one keeps it in memory --------
+    def _load(self) -> Tuple[List[dict], int]:
+        return self._line, self._at
+
+    def _store(self, line: List[dict], at: int) -> None:
+        self._line, self._at = line, at
+
+    def record(self, root: Ref, message: Optional[str] = None) -> None:
+        """A newly reached state becomes the tip.
+
+        A commit that changed nothing lands on the root it started from, and is
+        not a state: recording it would put two identical entries in the line
+        and make an `undo` look broken (it would step from a root to the same
+        root). Content addressing is what makes that check trivial."""
+        line, at = self._load()
+        line = line[:at + 1]                       # abandon the redo tail
+        if line and line[-1]["root"] == root:
+            self._store(line, len(line) - 1)
+            return
+        line.append({"root": root, "at": _utc_now(), "message": message})
+        self._store(line, len(line) - 1)
+
+    def entries(self) -> List[dict]:
+        return list(self._load()[0])
+
+    def position(self) -> int:
+        return self._load()[1]
+
+    def step(self, delta: int) -> Optional[Ref]:
+        """The root `delta` steps away, or None at the end of the line."""
+        line, at = self._load()
+        target = at + delta
+        if not line or not 0 <= target < len(line):
+            return None
+        self._store(line, target)
+        return line[target]["root"]
+
+    def seek(self, root: Ref) -> bool:
+        """Point at an already-known state. False if this line has never held it."""
+        line, _ = self._load()
+        for index in range(len(line) - 1, -1, -1):  # most recent occurrence
+            if line[index]["root"] == root:
+                self._store(line, index)
+                return True
+        return False
+
+
+def _utc_now() -> str:
+    from datetime import datetime, timezone
+    return datetime.now(timezone.utc).isoformat(timespec="seconds")
+
+
+class MemoryPointer(_Timeline):
     def __init__(self, root: Optional[Ref] = None):
+        super().__init__()
         self._root = root
+        if root is not None:
+            self.record(root)
 
     def get(self) -> Optional[Ref]:
         return self._root
 
-    def set(self, root: Ref) -> None:
+    def set(self, root: Ref, message: Optional[str] = None) -> None:
+        self._root = root
+        self.record(root, message)
+
+    def move_to(self, root: Optional[Ref]) -> None:
+        """Point here without calling it a new state (undo/redo/checkout)."""
         self._root = root
 
     def compare_and_set(self, expected: Optional[Ref], new: Optional[Ref]) -> bool:
@@ -1240,15 +1339,29 @@ class MemoryPointer:
         shared in-process pointer converge without a lost-update race."""
         if self._root == expected:
             self._root = new
+            self.record(new)
             return True
         return False
 
 
-class FilePointer:
-    """Local-file pointer, useful during development."""
+class FilePointer(_Timeline):
+    """Local-file pointer, useful during development.
 
-    def __init__(self, path: str):
+    Keeps a sibling `<path>.timeline` (JSON) so the store it points at can
+    answer `history()`, `undo()` and `redo()`. Best-effort under concurrent
+    writers, exactly like the ref file itself: a local-first store serializes
+    writers with its own lock, and two racing bare processes can lose a
+    timeline entry without losing data (every root stays readable by ref).
+    """
+
+    def __init__(self, path: str, keep_history: bool = True):
+        super().__init__()
         self.path = path
+        self.keep_history = keep_history
+
+    @property
+    def history_enabled(self) -> bool:              # type: ignore[override]
+        return self.keep_history
 
     def get(self) -> Optional[Ref]:
         try:
@@ -1258,11 +1371,41 @@ class FilePointer:
         except FileNotFoundError:
             return None
 
-    def set(self, root: Ref) -> None:
+    def _write(self, root: Ref) -> None:
         tmp = self.path + ".tmp"
         with open(tmp, "w") as f:
             f.write(root)
         os.replace(tmp, self.path)  # atomic on POSIX
+
+    def set(self, root: Ref, message: Optional[str] = None) -> None:
+        self._write(root)
+        if self.keep_history:
+            self.record(root, message)
+
+    def move_to(self, root: Optional[Ref]) -> None:
+        if root is not None:
+            self._write(root)
+
+    # -- _Timeline storage: a JSON sibling, rewritten atomically -------------
+    @property
+    def timeline_path(self) -> str:
+        return self.path + ".timeline"
+
+    def _load(self) -> Tuple[List[dict], int]:
+        try:
+            with open(self.timeline_path, encoding="utf-8") as f:
+                data = json.load(f)
+        except (FileNotFoundError, ValueError):
+            return [], -1
+        line = data.get("line") or []
+        at = data.get("at", len(line) - 1)
+        return line, at if -1 <= at < len(line) else len(line) - 1
+
+    def _store(self, line: List[dict], at: int) -> None:
+        tmp = self.timeline_path + ".tmp"
+        with open(tmp, "w", encoding="utf-8") as f:
+            json.dump({"line": line, "at": at}, f)
+        os.replace(tmp, self.timeline_path)
 
 
 class SwarmFeedPointer:
@@ -1877,12 +2020,23 @@ class RecordStore:
         finally:
             self._trie._reset_buffer()
 
-    def commit(self, *, reconcile: bool = False, resolver=None,
+    def commit(self, *, message: Optional[str] = None,
+               reconcile: bool = False, resolver=None,
                retries: int = 5) -> Optional[Ref]:
         """Flush staged changes; return the new root and update the pointer.
 
         The root/pointer changes only after every blob write has succeeded, so
         a reader following the pointer sees all of a commit or none of it.
+
+        `message` labels the state in this replica's timeline (`history()`), and
+        is deliberately **not** part of the content. This is the one place the
+        git analogy breaks and it matters: a git commit hashes its message, so
+        two people who make the same change with different words get different
+        commits. A root here is a hash of *state alone*, which is what makes
+        equal content converge to one root, dedup structurally, and merge
+        without conflict. So a message is a local annotation on a transition,
+        never a fact about the data — if attribution has to travel, sign a
+        record about the claim instead.
 
         With `reconcile=True` and a pointer attached, the commit converges with
         concurrent writers instead of overwriting them: if the pointer has moved
@@ -1910,7 +2064,7 @@ class RecordStore:
                 if reconcile:
                     new = self._reconcile(base, new, resolver, retries)
                 else:
-                    self._pointer.set(new)
+                    self._set_pointer(new, message)
         finally:
             if journaled:
                 self._blobs, self._trie._blobs = inner, inner
@@ -1919,6 +2073,123 @@ class RecordStore:
         self._staged.clear()
         self._root = new
         return new
+
+    def _set_pointer(self, root: Ref, message: Optional[str] = None) -> None:
+        """Pointers that keep a timeline take the message; others never see it.
+
+        Asked by capability rather than by catching TypeError, which would also
+        swallow a real signature error inside somebody's pointer."""
+        if message is not None and hasattr(self._pointer, "record"):
+            self._pointer.set(root, message)          # type: ignore[call-arg]
+        else:
+            self._pointer.set(root)
+
+    # -- history: where this store has been, and going back ------------------
+
+    def _timeline(self):
+        """The pointer's timeline, or a teaching error naming what is needed."""
+        pointer = self._pointer
+        if pointer is None or not getattr(pointer, "history_enabled", False):
+            raise TypeError(
+                "this store keeps no history: its pointer does not record one. "
+                "Use FilePointer (or a local-first store, whose HEAD is one) "
+                "to get history(), undo() and redo()."
+            )
+        return pointer
+
+    def history(self, limit: Optional[int] = None) -> List[Version]:
+        """The states this store has been in, newest first.
+
+        The `git log` of a record store — except that every entry *is* a whole
+        state, not a delta, so `RecordStore.at(entry.root, blobs)` reopens any
+        of them exactly. Returns `[]` for a store whose pointer keeps no
+        timeline; `undo`/`redo` raise there instead, since silently doing
+        nothing would be worse.
+
+        An `undo` moves the position without erasing anything, so the entry
+        after `current` is what `redo` would go to.
+        """
+        pointer = self._pointer
+        if pointer is None or not getattr(pointer, "history_enabled", False):
+            return []
+        entries, at = pointer.entries(), pointer.position()
+        versions = [Version(entry["root"], entry.get("at"),
+                            entry.get("message"), index == at)
+                    for index, entry in enumerate(entries)]
+        versions.reverse()
+        return versions if limit is None else versions[:limit]
+
+    def status(self) -> dict:
+        """Where the store is right now — the `git status` of it.
+
+        `staged` counts changes made since the last commit (0 means the root is
+        the whole truth). `behind` is how many states are ahead of the current
+        position, i.e. how much `redo` could replay."""
+        entries: List[dict] = []
+        at = -1
+        pointer = self._pointer
+        if pointer is not None and getattr(pointer, "history_enabled", False):
+            entries, at = pointer.entries(), pointer.position()
+        return {
+            "root": self._root,
+            "staged": len(self._staged),
+            "readonly": self._readonly,
+            "history": len(entries),
+            "position": at,
+            "undoable": max(0, at),
+            "redoable": max(0, len(entries) - 1 - at) if entries else 0,
+        }
+
+    def _move_to(self, root: Optional[Ref]) -> Optional[Ref]:
+        pointer = self._pointer
+        move = getattr(pointer, "move_to", None)
+        if move is None:
+            self._set_pointer(root)      # pointer without a position: just set
+        else:
+            move(root)
+        self._root = root
+        self._staged.clear()             # the new root IS the state
+        return root
+
+    def _step(self, delta: int) -> Optional[Ref]:
+        """Move, or don't. The end of the line must leave the store where it
+        was — an `undo` with nothing behind it once set the root to None and
+        emptied the store's view of itself."""
+        target = self._timeline().step(delta)
+        return None if target is None else self._move_to(target)
+
+    def undo(self) -> Optional[Ref]:
+        """Step back to the previous state; None if there is nothing before it.
+
+        Nothing is destroyed and nothing is rewritten: a root is content, so
+        going back is *pointing* back, and `redo()` comes forward again. What an
+        undo does NOT do is travel — a peer that merges this replica afterwards
+        re-adds what was undone, because merge only ever adds (the same wall a
+        removal has). Undo is local time travel, not a retraction others see.
+
+        Staged-but-uncommitted changes are dropped: the state you asked for is
+        the state you get.
+        """
+        return self._step(-1)
+
+    def redo(self) -> Optional[Ref]:
+        """Step forward again after an undo; None if already at the tip.
+
+        A commit made after an undo abandons the redo tail (see `_Timeline`),
+        so this replays only what nothing has overwritten."""
+        return self._step(+1)
+
+    def checkout(self, root: Ref) -> Ref:
+        """Jump to a named state this store has been in before.
+
+        Refused for a root the timeline has never held — pointing a store at
+        content it does not have is how a "restored" store fails later, on the
+        first read, rather than here."""
+        if not self._timeline().seek(root):
+            raise KeyError(
+                f"{root} is not a state this store has been in — history() "
+                f"lists the ones it has (RecordStore.at reads any root)")
+        return self._move_to(root)
 
     def _reconcile(self, base, new, resolver, retries):
         pointer = self._pointer

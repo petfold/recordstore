@@ -7,7 +7,7 @@ Compact, definition-first, no narrative. The tutorial lives in the
 `tests/test_reference.py` — if a name or parameter in this file and the
 code disagree, the suite fails.
 
-Package version this file describes: `0.19.0`.
+Package version this file describes: `0.20.0`.
 
 ## 1. Vocabulary
 
@@ -20,6 +20,7 @@ Package version this file describes: `0.19.0`.
 | staging | `put`/`delete` buffer in memory; nothing is written until `commit()`. |
 | commit | Writes staged changes, returns the new root. All-or-nothing for readers. |
 | snapshot | A read-only store pinned to one root (`RecordStore.at`). |
+| timeline | The states a pointer has been in, in order, plus where it is now — what `history()`, `undo()` and `redo()` read. An editor's undo line, not the journal's full audit. |
 | pointer | A mutable name for the latest root (file, memory, or a signed Swarm feed). |
 | addressing | The ref scheme of a bytes store: `sha256` or `swarm` (BMT). Uniform per store. |
 | proof | Self-contained evidence that a key has (or provably has not) a value under a root. |
@@ -54,7 +55,8 @@ Everything importable from `recordstore` (exactly `__all__`):
 | `BeeBytesStore` | blobs on a Swarm Bee node via `POST/GET /bytes` |
 | `CachedBytesStore` | byte-budgeted in-memory LRU in front of any bytes store |
 | `MemoryPointer` | in-process pointer with atomic `compare_and_set` |
-| `FilePointer` | pointer in a local file (atomic replace) |
+| `FilePointer` | pointer in a local file (atomic replace), keeping a timeline |
+| `Version` | one row of `RecordStore.history()`: `root`, `at`, `message`, `current` |
 | `SwarmFeedPointer` | pointer in an owner-signed Swarm feed |
 | `swarm_store` | one call: whole store on Swarm (Bee blobs + feed pointer) |
 | `LocalFirstRecordStore` | RecordStore over a local-first store directory |
@@ -80,11 +82,16 @@ Everything importable from `recordstore` (exactly `__all__`):
 | `RecordStore.contains` | `(key)` | `bool`; propagates `RecordUnavailable` rather than answering falsely. |
 | `RecordStore.keys` | `(prefix="")` | sorted key iterator, staged changes visible. |
 | `RecordStore.items` | `(prefix="")` | sorted `(key, record)` iterator. |
-| `RecordStore.commit` | `(*, reconcile=False, resolver=None, retries=5)` | flush staged → new root; updates the pointer. `reconcile=True` three-way-merges with a moved pointer and retries. On a local-first backend, also journals the commit. |
+| `RecordStore.commit` | `(*, message=None, reconcile=False, resolver=None, retries=5)` | flush staged → new root; updates the pointer. `reconcile=True` three-way-merges with a moved pointer and retries. On a local-first backend, also journals the commit. `message` labels the state in the timeline and is **never part of the content** — equal content commits to equal roots whatever the words. |
 | `RecordStore.diff` | `(other_root)` | `(key, mine, theirs)` per differing key; `ABSENT` marks a missing side. O(divergence). |
 | `RecordStore.merge` | `(bytes_store, base, ours, theirs, resolver=None)` | classmethod: three-way merge → merged root. Unresolved conflicts raise `MergeConflict` (`.conflicts`). |
 | `RecordStore.prove` | `(key, addressing=None)` | inclusion-or-absence proof dict for a committed key. `ValueError` on staged keys or unknown addressing. |
 | `RecordStore.root` | property | root of the last committed state. |
+| `RecordStore.history` | `(limit=None)` | the states this store has been in, newest first, as `Version`s. `[]` when the pointer keeps no timeline. |
+| `RecordStore.undo` | `()` | step back one state; `None` at the start of the line. Moves the pointer, drops staged changes, destroys nothing. |
+| `RecordStore.redo` | `()` | step forward again; `None` at the tip. A commit after an undo abandons the tail. |
+| `RecordStore.checkout` | `(root)` | jump to a state the timeline holds; `KeyError` for any other root. |
+| `RecordStore.status` | `()` | `{root, staged, readonly, history, position, undoable, redoable}`. |
 | `RecordStore.blobs` | property | the underlying bytes store (for `RecordStore.at(other, s.blobs)`). |
 
 Resolver contract (for `commit(reconcile=True)` and `merge`):
@@ -114,7 +121,7 @@ erasure coding off — equals what `POST /bytes` returns).
 | pointer | signature | notes |
 |---|---|---|
 | `MemoryPointer` | `(root=None)` | atomic `compare_and_set` — in-process multi-writer is race-free. |
-| `FilePointer` | `(path)` | atomic file replace; no CAS. |
+| `FilePointer` | `(path, keep_history=True)` | atomic file replace; no CAS. Keeps `<path>.timeline` (JSON) so the store can answer `history`/`undo`/`redo`; `keep_history=False` opts out. |
 | `SwarmFeedPointer` | `(api_url, topic, *, signer=None, owner=None, postage_batch_id=None, feed_ttl=15.0, max_lookup_retries=15, retry_backoff=0.5, retry_backoff_cap=5.0)` | reads need `owner` only; writes need `signer` (+ batch). Best-effort CAS; feeds are last-write-wins. |
 
 ## 7. Assemblers

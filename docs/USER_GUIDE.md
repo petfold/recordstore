@@ -653,6 +653,50 @@ v2 = store.commit()
 old = RecordStore.at(v1, blobs)   # v1 is untouched by later commits
 ```
 
+**Undo and redo (0.20.0+).** You do not have to keep those roots yourself: a
+pointer that keeps a timeline remembers where it has been, which is the only
+thing time travel was ever missing. A root *is* the state, so going back is
+pointing back — nothing is recovered and nothing is rewritten:
+
+```python
+store = RecordStore(DirBytesStore("~/.myapp/blobs"),
+                    pointer=FilePointer("~/.myapp/root"))
+store.put("config", {"mode": "fast"})
+store.commit(message="go fast")
+
+for version in store.history():          # newest first, like `git log`
+    print(version.root[:12], version.at, version.message, version.current)
+
+store.undo()      # the previous state; None if there is nothing before it
+store.redo()      # forward again; None at the tip
+store.checkout(some_root)                # jump to a state the timeline holds
+store.status()    # {root, staged, undoable, redoable, ...} — like `git status`
+```
+
+The semantics are an editor's, not a journal's: a line of states and a position
+in it. A commit made after an undo **abandons the redo tail**, exactly as typing
+after undo does. Nothing is destroyed by that — the abandoned root is still
+readable by ref, and a local-first store's journal keeps every root it ever
+committed (git's reflog to this timeline's branch). Staged-but-uncommitted
+changes are dropped by an undo: the state you asked for is the state you get.
+
+This works for a plain disk store and for a local-first one with no extra
+wiring, since the latter's `HEAD` *is* a `FilePointer`. Two caveats worth
+knowing: an undo moves the pointer, so **followers see the older state** (and on
+a published feed, so do they); and an undo does not travel through a *merge* — a
+peer that merges this replica afterwards re-adds what was undone, because merge
+only ever adds. Undo is local time travel, not a retraction others honour.
+
+**Commit messages are labels, not content.** `commit(message=...)` records the
+message in the timeline, and deliberately **not** in the root. This is the one
+place the git analogy breaks, and it is load-bearing: a git commit hashes its
+message, so the same change described differently is a different commit, while a
+root here hashes state alone — which is what makes equal content converge to one
+root, dedup structurally, and merge without conflict. Two people who make the
+same change with different words still agree on the state. If attribution has to
+*travel*, sign a record about the claim; a message only ever explains what this
+replica did.
+
 **Long consistent reads.** Snapshots are immutable, so a reporting job can
 iterate `keys()` and `get()` for hours against one root while writers
 commit new versions concurrently — no locks, no torn reads.
