@@ -211,9 +211,9 @@ for the full comparison.
 
 ## Status
 
-**Current release: 0.20.1** (2026-08-06). Extracted from
+**Current release: 0.20.2** (2026-09-10). Extracted from
 [petfold/ontodag](https://github.com/petfold/ontodag) (July 2026) with history
-preserved; validated against a live Bee 2.8.1 light node on Gnosis mainnet
+preserved; validated against a live Bee 2.8.2 light node on Gnosis mainnet
 (roundtrips, canonical roots on real BMT references, network retrievability) —
 the whole suite, live tests included, is **183 passed / 0 skipped** with
 `BEE_API` set.

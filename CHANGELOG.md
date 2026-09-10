@@ -4,6 +4,51 @@ All notable changes to this project are documented here. The format is based on
 [Keep a Changelog](https://keepachangelog.com/), and this project adheres to
 [Semantic Versioning](https://semver.org/).
 
+## [0.20.2] — 2026-09-10
+
+No source change: `src/` is untouched since 0.20.1. What this release carries is
+a re-validation against a newer Bee, plus corrections to what PyPI says about
+the package — classifiers are per-release metadata, so the repo and the
+published page had disagreed until now.
+
+### Validated
+
+- **The whole suite, live tests included, against a live Bee 2.8.2 light node on
+  Gnosis mainnet: 183 passed, 0 skipped** (3m54s). 0.20.1 was validated against
+  2.8.1; the 16 Bee and feed tests do not run in CI, which installs only
+  `[test]`, so this is the first run of that path against 2.8.2. Roundtrips,
+  canonical roots on real BMT references and network retrievability all hold.
+
+### Changed
+
+- **`Development Status :: 4 - Beta`**, up from `3 - Alpha`. 29 releases, 167
+  tests over more test code than source (2887 lines against 2566), four
+  in-stack dependents, and ontodag pinning `recordstore>=0.20.0` had outgrown
+  Alpha.
+- **Dropped `Intended Audience :: Science/Research`.** This is a
+  general-purpose, zero-dependency versioned record store; the classifier
+  stays on ontodag and mdl-fca, where it is accurate.
+
+### Documentation
+
+- The README states the current release and where history lives. The README is
+  the PyPI long description, so that too was stranded until a release.
+
+### Tests
+
+- The local-first commit latency bound no longer flakes. It asserted
+  `baseline + 1.0` — about 1.1s — against a value whose median is 1.0s, so it
+  passed or failed roughly evenly; it was borderline from the commit that
+  introduced it, and nothing had regressed. It now takes best-of-three and
+  bounds at `max(baseline * 30, 3.0)`.
+- Its docstring no longer claims to guard against per-put fsync. RecordStore
+  stages mutations in memory and writes every blob inside `commit()`, so
+  swarmfs's `durability="commit"` and `"blob"` fsync in the same place and
+  measure the same from here.
+- Measured while re-calibrating, for the record: the local-first commit costs
+  ~2.8ms and ~2.2-2.9 fsyncs per put, linear in node count out to n=2400. The
+  ~10x gap against DirBytesStore is durability — DirBytesStore never fsyncs.
+
 ## [0.20.1] — 2026-08-06
 
 ### Documentation
