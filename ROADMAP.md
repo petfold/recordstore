@@ -3,7 +3,17 @@
 Forward-looking, multi-phase tracks. Near-term limitations and their
 incremental fixes live in the user guide's
 [§7 Limitations and roadmap](docs/USER_GUIDE.md#7-limitations-and-roadmap);
-this file is for larger bets that span several releases.
+this file is for larger bets that span several releases. Each phase is done
+when its acceptance criterion is met; keep this file updated (mark items DONE
+with a date).
+
+## Status at a glance
+
+- [x] **Local-first sync track** — feature-complete as designed: R0, R1, R2
+      and R3 all landed 2026-08-04 (released as 0.17.0 and 0.18.0). What
+      remains of the shared layer lives in swarmfs (L4).
+- [ ] **Canonical-POT convergence track** — experimental, C0 through C4 all
+      open.
 
 ---
 
@@ -62,12 +72,12 @@ transfer verbs and recorded lineage; both come from the shared layer.
 
 ### Phases
 
-- **R0 — Bounded caches. ✅ 2026-08-04** (CHANGELOG [Unreleased]). The in-memory value-blob cache (`RecordStore.get`
+- [x] **R0 — Bounded caches** (DONE 2026-08-04, CHANGELOG [Unreleased]). The in-memory value-blob cache (`RecordStore.get`
   currently re-fetches values on every read) and a bound on the
   currently-unbounded `_Trie._cache`, both as byte-budgeted LRU. Shaped as
   a wrapping `BytesStore` so it composes with any backend.
   *Acceptance:* a stores-larger-than-RAM iteration test holds memory flat.
-- **R1 — Adopt `swarmfs.localstore`. ✅ 2026-08-04** — `local_first_store()`
+- [x] **R1 — Adopt `swarmfs.localstore`** (DONE 2026-08-04) — `local_first_store()`
   / `LocalFirstRecordStore`; both acceptance tests hold (cable-pull and
   DirBytesStore commit-latency parity). *Findings:* a `HEAD` pointer file
   is required beside the journal — canonicity means returning to a prior
@@ -87,7 +97,7 @@ transfer verbs and recorded lineage; both come from the shared layer.
   durability (commit-boundary fsync batching, not L0's per-blob fsync) is
   not meaningfully slower than `DirBytesStore` for a many-small-node
   commit.
-- **R2 — Partial-replica controls. ✅ 2026-08-04** — `pin(name, prefix)` /
+- [x] **R2 — Partial-replica controls** (DONE 2026-08-04) — `pin(name, prefix)` /
   `unpin` / `fetch(prefix)` over the new `_Trie.refs_under` walk;
   `RecordUnavailable` (deliberately not a `KeyError`) for
   exists-but-unreachable values, so `contains` can never answer a wrong
@@ -96,7 +106,7 @@ transfer verbs and recorded lineage; both come from the shared layer.
   the head syncs). Structure-resident/values-remote needed no new code —
   it is the eviction ordering (payload before structure) doing its job;
   batch-TTL surfacing in `status()` stays with swarmfs L4.
-- **R3 — History retention. ✅ 2026-08-04** — `squash_history()`: the
+- [x] **R3 — History retention** (DONE 2026-08-04) — `squash_history()`: the
   trie walk re-lists the tip's full reachable set (only the app can — the
   journal layer is blob-blind), swarmfs ≥ 0.6's `rebase_root` collapses
   the lineage onto it, `gc_orphans` frees dropped history's exclusive
@@ -109,7 +119,7 @@ transfer verbs and recorded lineage; both come from the shared layer.
 ### References
 
 - Design doc (canonical): `../swarmfs/docs/localstore-design.md`.
-- swarmfs roadmap: `../swarmfs/docs/roadmap.md` §v3.
+- swarmfs roadmap: `../swarmfs/ROADMAP.md` §v3.
 - Seams this builds on: `BytesStore` protocol, `_Trie._cache`,
   `DirBytesStore(addressing="swarm")`, `RecordStore.merge`/`diff`,
   `Pointer` — all in `src/recordstore/recordstore.py`.
@@ -160,7 +170,7 @@ define the proof interface so both encodings serve it.
 
 ### Phases
 
-- **C0 — Index seam.** Establish a clean internal boundary:
+- [ ] **C0 — Index seam.** Establish a clean internal boundary:
   public API → index-encoding layer → chunk store.
   *Acceptance:* a second index encoding can be registered without touching the
   public API (`RecordStore`) or the chunk store (`BytesStore`).
@@ -174,7 +184,7 @@ define the proof interface so both encodings serve it.
   contract into an injectable index interface — a refactor with no behavioural
   or API change, provable by keeping the existing suite green.
 
-- **C1 — Canonical-POT prototype.** Implement POT node semantics (bitmap fork
+- [ ] **C1 — Canonical-POT prototype.** Implement POT node semantics (bitmap fork
   table, one pinned element per node, proximity-order = longest-common-prefix
   branching) as an experimental index encoding, with the hash-derived
   pin-priority rule enforcing canonical shape.
@@ -182,7 +192,7 @@ define the proof interface so both encodings serve it.
   root regardless of insertion order; insert/delete round-trips preserve
   canonicity. Reuse the fuzz suite's dict-oracle pattern.
 
-- **C2 — Merge/diff.** Subtree-hash short-circuit merge and diff over the
+- [ ] **C2 — Merge/diff.** Subtree-hash short-circuit merge and diff over the
   canonical structure.
   *Reconciliation:* this already exists **for the radix trie** —
   `RecordStore.merge` + `_Trie._diff`/`_diff_nodes`, short-circuiting unchanged
@@ -191,12 +201,12 @@ define the proof interface so both encodings serve it.
   into `_Trie`, and (b) implement it for the POT encoding.
   *Acceptance:* one merge interface, exercised by both encodings.
 
-- **C3 — Conformance.** Test vectors against the Go implementation's wire format
+- [ ] **C3 — Conformance.** Test vectors against the Go implementation's wire format
   where obtainable; where not, generate and commit our own vectors and document
   every known or suspected divergence from the Go encoding explicitly. Silence
   about a divergence is a bug.
 
-- **C4 — Upstream proposal.** A short spec document — pin rule, merge algorithm,
+- [ ] **C4 — Upstream proposal.** A short spec document — pin rule, merge algorithm,
   edge cases found, prototype results — suitable for filing as a discussion/issue
   on `ethersphere/proximity-order-trie`. **Document deliverable, not code.**
 
