@@ -215,8 +215,8 @@ for the full comparison.
 [petfold/ontodag](https://github.com/petfold/ontodag) (July 2026) with history
 preserved; validated against a live Bee 2.8.2 light node on Gnosis mainnet
 (roundtrips, canonical roots on real BMT references, network retrievability) —
-the whole suite, live tests included, is **184 passed / 0 skipped** with
-`BEE_API` set.
+CI runs **166 tests** offline, and with `BEE_API` set the whole suite, live
+tests included, is **184 passed / 0 skipped**.
 
 Landmarks: `SwarmFeedPointer` (owner-signed Swarm feed, over `swarm-bee`) in
 v0.4.0; three-way `merge` in v0.8.0; auto-reconciling `commit(reconcile=True)` in
