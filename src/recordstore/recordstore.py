@@ -1658,14 +1658,28 @@ class SwarmFeedPointer:
         return lo
 
     def _soc_exists(self, index: int) -> bool:
+        """Does the feed's chunk at `index` exist? 404 is the one definitive
+        "no". A 500 is a retrieval that did not complete — Bee logs "read
+        chunk failed" and a light node answers 500 and 404 for the same
+        absent chunk moments apart — so it is retried here with the pointer's
+        backoff, like `get`'s lookups, and raised only once the retries are
+        spent. Before 0.20.3 the probe raised at the first 500 and `set`,
+        which probes cold, had no retry of its own: a first commit to a fresh
+        feed failed on one flaky read (loopmarket's live gate, 2026-09-18)."""
         identifier = self._make_feed_identifier(self._topic, index)
-        try:
-            self._bee.file.download_soc(self._owner, identifier)
-            return True
-        except self._BeeResponseError as e:
-            if getattr(e, "status", None) == 404:
-                return False
-            raise  # transient (e.g. 500): let the caller retry
+        delay = self._backoff
+        for attempt in range(self._max_retries):
+            try:
+                self._bee.file.download_soc(self._owner, identifier)
+                return True
+            except self._BeeResponseError as e:
+                if getattr(e, "status", None) == 404:
+                    return False
+                if attempt == self._max_retries - 1:
+                    raise  # transient for too long: the caller hears it
+            time.sleep(delay)
+            delay = min(delay * 2, self._backoff_cap)
+        return False  # pragma: no cover - the loop returns or raises
 
     @staticmethod
     def _soc_reference(soc) -> Ref:

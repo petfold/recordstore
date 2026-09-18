@@ -4,6 +4,21 @@ All notable changes to this project are documented here. The format is based on
 [Keep a Changelog](https://keepachangelog.com/), and this project adheres to
 [Semantic Versioning](https://semver.org/).
 
+## [0.20.3] — 2026-09-18
+
+### Fixed
+
+- **`SwarmFeedPointer.set` no longer fails a fresh feed's first commit on one
+  flaky read.** `set` probes the feed's chunks cold to find the tip, and the
+  probe raised at the first 500 from the node — a retrieval that did not
+  complete ("read chunk failed" in Bee's log), which a light node answers for
+  an absent chunk moments before answering 404 for the same one. The probe
+  now retries a non-404 error with the pointer's own backoff
+  (`max_lookup_retries`, `retry_backoff`), as `get`'s lookups always did, and
+  raises only once the retries are spent. Surfaced by loopmarket's live
+  clearing gate (2026-09-18): three `propose` runs in a row failed in the
+  first commit to a new feed. `tests/test_feed_probe.py` (stubbed client).
+
 ## [0.20.2] — 2026-09-10
 
 No source change: `src/` is untouched since 0.20.1. What this release carries is
