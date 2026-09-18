@@ -636,7 +636,13 @@ works.
   reads with exponential backoff, ignoring a result that regresses below
   the newest index it has seen. A never-written feed resolves to `None`
   after the retries exhaust (which `RecordStore` treats as the empty
-  dataset). The retry/backoff/TTL knobs are constructor arguments.
+  dataset). The retry/backoff/TTL knobs are constructor arguments, and
+  since 0.20.3 they govern the cold *write* path too: `set` finds the
+  feed's tip by probing its chunks, and a probe that the node answers with
+  a 500 (a retrieval that did not complete — a light node gives 500 and
+  404 for the same absent chunk moments apart) is retried the same way
+  before it is raised, so a fresh feed's first commit does not fail on one
+  flaky read.
 
 ---
 
@@ -839,7 +845,9 @@ multi-release bets (e.g. the canonical-POT convergence track) live in the
   (see bee-py#2) this goes through the client transport. As of v0.4.1 index
   discovery no longer depends on the flaky lookup at all — it probes the feed's
   SOC chunks directly (individually retrievable even when the lookup 404s), so
-  cold reads resolve in one attempt and an empty feed returns `None` at once.
+  cold reads resolve in one attempt and an empty feed returns `None` at once
+  (and since v0.20.3 that probe retries a transient 500 with the pointer's
+  backoff instead of raising at the first one, on the write path as well).
   The one remaining rough edge is that the `after` hint reaches Bee through a
   private `swarm-bee` transport surface until bee-py#2 exposes it publicly.
   Full rationale is in the `SwarmFeedPointer` docstring in `recordstore.py`.
