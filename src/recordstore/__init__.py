@@ -19,9 +19,13 @@ from .recordstore import (
     canonical_bytes,
     verify_proof,
     verify_extension,
+    verify_feed_update,
+    verify_equivocation,
+    FeedUpdate,
     ProofError,
     PROOF_FORMAT,
     EXTENSION_FORMAT,
+    FEED_UPDATE_FORMAT,
 )
 
 __all__ = [
@@ -45,7 +49,11 @@ __all__ = [
     "canonical_bytes",
     "verify_proof",
     "verify_extension",
+    "verify_feed_update",
+    "verify_equivocation",
+    "FeedUpdate",
     "ProofError",
     "PROOF_FORMAT",
     "EXTENSION_FORMAT",
+    "FEED_UPDATE_FORMAT",
 ]

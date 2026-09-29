@@ -21,6 +21,16 @@ All notable changes to this project are documented here. The format is based on
   fills, a catalogue's categories across versions.
   `tests/test_extension_proofs.py`, with a dict oracle over random
   histories.
+- **A feed's signed sequence of roots, verifiable offline** (2026-09-29):
+  `SwarmFeedPointer.update(index)` / `updates(start, stop)` return feed
+  updates as envelopes carrying the raw owner-signed single-owner chunk;
+  `verify_feed_update(update, owner, topic)` checks one with no node and
+  returns `FeedUpdate(index, root, timestamp)` (the timestamp the writer's
+  claim, not a clock); `verify_equivocation(a, b, owner, topic)` turns two
+  different roots signed at one index into a proof of equivocation. The
+  ordering an extension proof leaves open; trusted time stays an anchor's.
+  Format `"recordstore-feed-update"`, version 1. `tests/test_feed_history.py`
+  (chunks signed with swarm-bee's own code; the node stubbed).
 
 ## [0.20.3] — 2026-09-18
 

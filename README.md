@@ -90,6 +90,12 @@ and nothing more:
   old_root, new_root)` checks it with no store access. The proof carries only
   the nodes along what changed — what an append-only keyspace (a register's
   revocations, a book's tombstones) promises, made checkable.
+- **A verifiable sequence of roots** — `pointer.update(i)` returns a Swarm
+  feed's update at index `i` as the raw owner-signed chunk;
+  `verify_feed_update(update, owner, topic)` checks it offline, and two
+  different roots signed at one index are a proof of equivocation
+  (`verify_equivocation`). The order of a store's published states, for a
+  third party.
 - **Version comparison** — `store.diff(other_root)` answers "what changed
   between these two published versions?" directly: `(key, mine, theirs)` per
   differing key, the same O(divergence) structural walk, so equal roots read

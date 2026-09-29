@@ -359,7 +359,34 @@ node the walk needs that the proof lacks, or on any envelope mismatch.
   verifying needs nothing but the envelope.
 - What the proof does **not** say: which of the two roots is newer, or
   whether a third, newer root exists. That ordering is the pointer's (a
-  feed's sequence of updates), and trusted time is an anchor's.
+  feed's sequence of updates, below), and trusted time is an anchor's.
+
+### Reading a feed's signed sequence of roots
+
+```python
+from recordstore import verify_feed_update, verify_equivocation
+
+envelope = pointer.update(7)                  # SwarmFeedPointer: the raw signed chunk
+u = verify_feed_update(envelope, owner, topic)  # -> FeedUpdate(index=7, root=..., timestamp=...)
+sequence = pointer.updates()                  # every update, index order
+```
+
+A store behind a Swarm feed publishes each committed root as a feed update:
+a single-owner chunk the owner signed, at an address derived from the
+topic and the index, its payload the writer's timestamp and the root.
+`update(index)` returns that chunk as a self-contained envelope, and
+`verify_feed_update` checks it with no node — so the order of a store's
+published states is checkable by a third party, which is what an extension
+proof leaves open ("which of these two roots came later?"). Two different
+roots signed at the same index are an equivocation, and `verify_equivocation`
+turns the two envelopes into a proof of it anyone can check.
+
+What a feed cannot prove is time. The timestamp is the writer's own claim —
+binding on the writer, who signed it, but not a clock — and "no newer root
+existed at t" cannot be shown from Swarm at all. Where a reader needs that,
+the roots must be anchored somewhere with a trusted clock (a chain).
+Verification needs the `swarm-bee` package (the `feeds` extra) for the chunk
+arithmetic.
 
 ### Error summary
 

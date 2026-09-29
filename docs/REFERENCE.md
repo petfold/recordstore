@@ -71,6 +71,10 @@ Everything importable from `recordstore` (exactly `__all__`):
 | `PROOF_FORMAT` | proof envelope format name (`"recordstore-trie-proof"`) |
 | `verify_extension` | check that a later root keeps an earlier root's records under prefixes — no store |
 | `EXTENSION_FORMAT` | extension-proof envelope format name (`"recordstore-extension-proof"`) |
+| `verify_feed_update` | check an owner-signed feed update envelope offline → `FeedUpdate` |
+| `verify_equivocation` | two different roots signed at one feed index → the index (a proof of equivocation) |
+| `FeedUpdate` | `(index, root, timestamp)` of a verified feed update |
+| `FEED_UPDATE_FORMAT` | feed-update envelope format name (`"recordstore-feed-update"`) |
 
 ## 4. `RecordStore`
 
@@ -162,6 +166,11 @@ directory (flock, POSIX).
 | `RecordStore.prove_extension` | `(base, prefixes=("",), addressing=None)` | JSON-ready envelope `{format, version, addressing, base, root, prefixes, nodes}` carrying the raw node blobs of both roots along what changed under the prefixes; self-verified before return. |
 | `verify_extension` | `(proof, base, root)` | pure function: returns the proven prefixes when `root` holds every record `base` held under them with the same value; raises `ProofError` on a record missing or changed, a node the walk needs and the proof lacks, or any envelope mismatch. |
 | `EXTENSION_FORMAT` | constant | `"recordstore-extension-proof"`, version 1. |
+| `SwarmFeedPointer.update` | `(index)` | the feed's update at `index` as an envelope `{format, version, owner, topic, index, soc}` carrying the raw owner-signed single-owner chunk. |
+| `SwarmFeedPointer.updates` | `(start=0, stop=None)` | the updates from `start` up to `stop` (default: past the probed tip), in index order — the owner-signed sequence of the store's published roots. |
+| `verify_feed_update` | `(update, owner, topic)` | pure (needs `swarm-bee` for the chunk arithmetic, no node): returns `FeedUpdate(index, root, timestamp)` — the timestamp is the writer's claim, not a clock; raises `ProofError` for another owner, feed or index, or a chunk that does not verify. `topic` is the name or the 32-byte hex. |
+| `verify_equivocation` | `(a, b, owner, topic)` | both envelopes verify, at one index, with different roots → that index; `ProofError` otherwise. |
+| `FEED_UPDATE_FORMAT` | constant | `"recordstore-feed-update"`, version 1. |
 
 ## 10. Errors
 

@@ -1846,12 +1846,129 @@ class SwarmFeedPointer:
             delay = min(delay * 2, self._backoff_cap)
         return False  # pragma: no cover - the loop returns or raises
 
+    def update(self, index: int) -> dict:
+        """The feed's update at `index` as a self-contained, verifiable
+        envelope: the raw single-owner chunk — the owner's signature over
+        (identifier, content), its payload the writer's timestamp and the
+        root — beside the owner, topic and index it claims to be. Anyone
+        checks it with `verify_feed_update`, with no node. Raises the node's
+        response error for an index the feed does not hold (404)."""
+        from bee.swarm.soc import calculate_single_owner_chunk_address
+        identifier = self._make_feed_identifier(self._topic, index)
+        address = calculate_single_owner_chunk_address(identifier, self._owner)
+        wire = self._bee.file.download_chunk(address)
+        return {"format": FEED_UPDATE_FORMAT, "version": 1, "owner": self._owner.as_bytes().hex(),
+                "topic": self._topic.as_bytes().hex(), "index": int(index), "soc": bytes(wire).hex()}
+
+    def updates(self, start: int = 0, stop: Optional[int] = None) -> List[dict]:
+        """The feed's updates from `start` up to `stop` (default: past the tip,
+        found by probing), as `update` envelopes — the owner-signed sequence
+        of roots, in index order: what orders a store's published states
+        for a third party, where `history` is this replica's own timeline."""
+        if stop is None:
+            tip = self._probe_latest_index()
+            stop = tip + 1 if tip is not None else 0
+        return [self.update(i) for i in range(start, stop)]
+
     @staticmethod
     def _soc_reference(soc) -> Ref:
         # SOC payload is timestamp(8 BE) || reference; strip the timestamp.
         payload = soc.payload
         payload = payload.as_bytes() if hasattr(payload, "as_bytes") else bytes(payload)
         return payload[8:].hex()
+
+
+# ---------------------------------------------------------------------------
+# Feed updates: a published sequence of roots, verifiable offline
+#
+# A store behind a Swarm feed publishes each committed root as a feed update:
+# a single-owner chunk at address keccak(identifier || owner), identifier =
+# keccak(topic || index as 8 big-endian bytes), signed by the owner, its
+# payload the writer's 8-byte timestamp and the root. The chunk alone proves
+# "the owner published this root as update `index`", so the sequence of a
+# store's states is checkable by a third party — the ordering an extension
+# proof lacks (which of two roots came later). Two different roots signed at
+# one index are a self-contained proof of equivocation. What a feed cannot
+# prove is time: its timestamp is the writer's own claim, binding on the
+# writer, not a clock; "no newer root existed at t" needs a trusted anchor.
+# Format "recordstore-feed-update", version 1. Needs the `bee` package (the
+# `feeds` extra) to verify, loaded lazily.
+# ---------------------------------------------------------------------------
+
+FEED_UPDATE_FORMAT = "recordstore-feed-update"
+
+
+class FeedUpdate(NamedTuple):
+    """One verified feed update: the owner published `root` as update
+    `index`, stamping it `timestamp` (the writer's claim, unix seconds)."""
+    index: int
+    root: Ref
+    timestamp: int
+
+
+def _hex_owner(owner: str) -> str:
+    h = owner[2:] if owner.startswith("0x") else owner
+    if len(h) != 40:
+        raise ProofError(f"{owner!r} is not a 20-byte owner address")
+    return h.lower()
+
+
+def _hex_topic(topic: str) -> str:
+    """A 32-byte topic in hex, or a topic name as `SwarmFeedPointer` hashes it."""
+    h = topic[2:] if topic.startswith("0x") else topic
+    if len(h) == 64 and all(c in "0123456789abcdefABCDEF" for c in h):
+        return h.lower()
+    from bee.swarm.typed_bytes import Topic
+    return Topic.from_string(topic).as_bytes().hex()
+
+
+def verify_feed_update(update, owner: str, topic: str) -> FeedUpdate:
+    """Check that `update` is `owner`'s signed update of the feed `topic`
+    (a name, as `SwarmFeedPointer` takes it, or the 32-byte topic in hex) at
+    the index it claims, and return what it publishes. Raises
+    ``ProofError`` on any mismatch. Pure: no node, only the chunk's bytes."""
+    try:
+        from bee.feeds import make_feed_identifier
+        from bee.swarm.soc import calculate_single_owner_chunk_address, unmarshal_single_owner_chunk
+        from bee.swarm.typed_bytes import EthAddress, Topic
+    except ImportError as e:  # pragma: no cover - only without the extra
+        raise ImportError('verifying feed updates requires the \'swarm-bee\' package; '
+                          'install it with: pip install "recordstore[feeds]"') from e
+    if not isinstance(update, dict) or update.get("format") != FEED_UPDATE_FORMAT:
+        raise ProofError(f"not a {FEED_UPDATE_FORMAT} envelope")
+    if update.get("version") != 1:
+        raise ProofError(f"unsupported feed update version {update.get('version')!r}")
+    owner_hex, topic_hex = _hex_owner(owner), _hex_topic(topic)
+    if update.get("owner") != owner_hex or update.get("topic") != topic_hex:
+        raise ProofError("the update is another owner's or another feed's")
+    index = update.get("index")
+    if not isinstance(index, int) or isinstance(index, bool) or not 0 <= index < (1 << 64):
+        raise ProofError("the update names no index")
+    identifier = make_feed_identifier(Topic(bytes.fromhex(topic_hex)), index)
+    address = calculate_single_owner_chunk_address(identifier, EthAddress(bytes.fromhex(owner_hex)))
+    try:
+        soc = unmarshal_single_owner_chunk(bytes.fromhex(update.get("soc", "")), address)
+    except Exception:
+        raise ProofError("the chunk is not the owner's signed update at this index") from None
+    payload = soc.payload.as_bytes() if hasattr(soc.payload, "as_bytes") else bytes(soc.payload)
+    if len(payload) not in (8 + 32, 8 + 64):
+        raise ProofError("the update's payload is not a timestamp and a root")
+    return FeedUpdate(index, payload[8:].hex(), int.from_bytes(payload[:8], "big"))
+
+
+def verify_equivocation(a, b, owner: str, topic: str) -> int:
+    """Two updates by `owner` of one feed at one index publishing different
+    roots: the owner equivocated, and this returns the index. Each envelope
+    verifies alone (`verify_feed_update`), so the pair is a self-contained,
+    third-party-checkable accusation. Raises ``ProofError`` when either does
+    not verify, the indices differ (a sequence, not a conflict), or the roots
+    agree."""
+    ua, ub = verify_feed_update(a, owner, topic), verify_feed_update(b, owner, topic)
+    if ua.index != ub.index:
+        raise ProofError("updates at different indices are a sequence, not an equivocation")
+    if ua.root == ub.root:
+        raise ProofError("the two updates publish the same root")
+    return ua.index
 
 
 # ---------------------------------------------------------------------------
