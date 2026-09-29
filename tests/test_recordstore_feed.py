@@ -153,6 +153,34 @@ class TestSwarmFeedPointer(unittest.TestCase):
         final = RecordStore(blobs, pointer=self._pointer(topic))
         self.assertEqual(dict(final.items()), {"a": 1, "b": 2, "c": 3})
 
+    def test_the_signed_sequence_of_roots_verifies_offline(self):
+        # 2026-09-29: the feed's updates, read back from the node as raw
+        # owner-signed chunks, verify with no node: the published order of
+        # a store's roots, for a third party.
+        from recordstore import SwarmFeedPointer, verify_feed_update
+        topic = self._unique_topic("seq")
+        writer = self._pointer(topic)
+        roots = [secrets.token_hex(32) for _ in range(3)]
+        for r in roots:
+            writer.set(r)
+        owner = writer._owner.as_bytes().hex()
+        reader = SwarmFeedPointer(BEE_API, topic, owner=owner)
+        envelopes = None
+        for _ in range(10):                       # a fresh chunk may take a moment to be retrievable
+            try:
+                envelopes = reader.updates(0, 3)
+                break
+            except Exception:  # noqa: BLE001
+                time.sleep(2)
+        self.assertIsNotNone(envelopes)
+        updates = [verify_feed_update(e, owner, topic) for e in envelopes]
+        self.assertEqual([(u.index, u.root) for u in updates], list(enumerate(roots)))
+        now = int(time.time())
+        self.assertTrue(all(abs(u.timestamp - now) < 3600 for u in updates))   # the writer's own clock
+        from recordstore import ProofError
+        with self.assertRaises(ProofError):
+            verify_feed_update(envelopes[0], "0x" + "33" * 20, topic)
+
     def test_end_to_end_recordstore_over_feed(self):
         from recordstore import BeeBytesStore, RecordStore
 
