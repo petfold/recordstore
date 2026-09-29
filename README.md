@@ -223,14 +223,19 @@ for the full comparison.
 
 ## Status
 
-**Current release: 0.20.3** (2026-09-18; the feed pointer's cold probe
-retries a transient 500, so a fresh feed's first commit no longer fails on
-one flaky read — found by loopmarket's live clearing gate). Extracted from
+**Current release: 0.21.0** (2026-09-29; extension proofs — a later root
+keeps an earlier root's records under prefixes, proven with the nodes along
+what changed and verified with no store — and a feed's signed sequence of
+roots, verifiable offline with proofs of equivocation; the first user is
+loopmarket's register sequence, R5). Extracted from
 [petfold/ontodag](https://github.com/petfold/ontodag) (July 2026) with history
 preserved; validated against a live Bee 2.8.2 light node on Gnosis mainnet
-(roundtrips, canonical roots on real BMT references, network retrievability) —
-CI runs **170 tests** offline, and with `BEE_API` set the whole suite, live
-tests included, is **188 passed / 0 skipped**.
+(roundtrips, canonical roots on real BMT references, network retrievability,
+and since 0.21.0 three roots published on a feed and their signed sequence
+verified offline) — CI collects **186 tests** offline (the live-node tests
+skip there; `tests/test_local_first.py`'s 18 more need `swarmfs`), and with
+`BEE_API` set and every extra installed the whole suite of 204, live tests
+included, is **203 passed / 1 skipped** (the count check only CI enforces).
 
 Landmarks: `SwarmFeedPointer` (owner-signed Swarm feed, over `swarm-bee`) in
 v0.4.0; three-way `merge` in v0.8.0; auto-reconciling `commit(reconcile=True)` in

@@ -322,7 +322,7 @@ Details worth knowing:
   the bytes store's endpoint completely (see §7): `verify_proof` checks
   every byte it returns, `store.get` checks nothing.
 
-### Proving that a later root extends an earlier one
+### Proving that a later root extends an earlier one (0.21.0)
 
 ```python
 from recordstore import verify_extension
@@ -361,7 +361,7 @@ node the walk needs that the proof lacks, or on any envelope mismatch.
   whether a third, newer root exists. That ordering is the pointer's (a
   feed's sequence of updates, below), and trusted time is an anchor's.
 
-### Reading a feed's signed sequence of roots
+### Reading a feed's signed sequence of roots (0.21.0)
 
 ```python
 from recordstore import verify_feed_update, verify_equivocation

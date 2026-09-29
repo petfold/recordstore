@@ -6,6 +6,8 @@ All notable changes to this project are documented here. The format is based on
 
 ## [Unreleased]
 
+## [0.21.0] — 2026-09-29
+
 ### Added
 
 - **Extension proofs** (2026-09-29): `RecordStore.prove_extension(base,

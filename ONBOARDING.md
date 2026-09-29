@@ -11,7 +11,7 @@ Two sibling repos, developed together, released to PyPI separately:
   default and writable with `--rw` (one commit per saved file, the new
   root printed at unmount) — and **ACT access control** (`act=True` /
   `act_history=`, grantee management), plus encryption (0.9).
-- **`recordstore`** (`~/projects/recordstore`, v0.20.3) — a versioned
+- **`recordstore`** (`~/projects/recordstore`, v0.21.0) — a versioned
   key→record store (JSON values, atomic commits, canonical roots,
   three-way merge, verifiable proofs) over any content-addressed
   `BytesStore` — memory, local disk, S3, a Bee node, or the local-first
