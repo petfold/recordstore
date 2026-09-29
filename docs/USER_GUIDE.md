@@ -322,6 +322,45 @@ Details worth knowing:
   the bytes store's endpoint completely (see §7): `verify_proof` checks
   every byte it returns, `store.get` checks nothing.
 
+### Proving that a later root extends an earlier one
+
+```python
+from recordstore import verify_extension
+
+store.extends(old_root, ["revoked/"])                  # local check: True / False
+proof = store.prove_extension(old_root, ["revoked/"])  # against the committed root
+verify_extension(proof, old_root, new_root)            # pure: -> ("revoked/",)
+```
+
+An **extension proof** says: under these prefixes, the later root holds
+every record the earlier root held, with the same value — records may
+have been added, none removed or altered. It is what an append-only
+keyspace promises (a register's revocations, a book's tombstones or fills,
+a catalogue's categories across versions), made checkable by anyone who
+holds the two roots: an application that rewrote its history cannot prove
+the extension, and a reader who holds both roots can show which key went
+missing.
+
+The envelope `{format, version, addressing, base, root, prefixes, nodes}`
+carries the raw node blobs a lockstep walk of the two roots touches under
+the prefixes. A subtree whose reference is the same under both roots is
+skipped unopened, keys only the later root holds are never visited, and the
+walk follows the three shapes in which two canonical tries differ (equal
+edges, a split, diverging edges) — so the proof's size follows what changed
+under the prefixes, not the size of the store. `verify_extension` replays
+the walk over the carried nodes alone, indexed by their recomputed
+references, and raises `ProofError` on a record missing or changed, on any
+node the walk needs that the proof lacks, or on any envelope mismatch.
+
+- `''` as a prefix covers every key; several prefixes are proven at once.
+- Values compare by reference: equal content address, equal bytes.
+- The earlier root's nodes must still be reachable from this store's bytes
+  store to *prove* (a content-addressed store keeps every root it wrote);
+  verifying needs nothing but the envelope.
+- What the proof does **not** say: which of the two roots is newer, or
+  whether a third, newer root exists. That ordering is the pointer's (a
+  feed's sequence of updates), and trusted time is an anchor's.
+
 ### Error summary
 
 | Situation | Raised |

@@ -84,6 +84,12 @@ and nothing more:
   provable because the canonical encoding gives a key exactly one possible
   location); `verify_proof(proof, root)` checks it with no store access at
   all — hold the 32-byte root, verify any claim about the dataset.
+- **Extension proofs** — `store.prove_extension(old_root, ["revoked/"])`
+  proves that under those prefixes the committed root holds every record
+  `old_root` held, unchanged (additions allowed); `verify_extension(proof,
+  old_root, new_root)` checks it with no store access. The proof carries only
+  the nodes along what changed — what an append-only keyspace (a register's
+  revocations, a book's tombstones) promises, made checkable.
 - **Version comparison** — `store.diff(other_root)` answers "what changed
   between these two published versions?" directly: `(key, mine, theirs)` per
   differing key, the same O(divergence) structural walk, so equal roots read

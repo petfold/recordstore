@@ -4,6 +4,24 @@ All notable changes to this project are documented here. The format is based on
 [Keep a Changelog](https://keepachangelog.com/), and this project adheres to
 [Semantic Versioning](https://semver.org/).
 
+## [Unreleased]
+
+### Added
+
+- **Extension proofs** (2026-09-29): `RecordStore.prove_extension(base,
+  prefixes)`, `verify_extension(proof, base, root)` and
+  `RecordStore.extends(base, prefixes)`. "Under these prefixes, the later
+  root holds every record the earlier root held, unchanged" — additions
+  allowed, nothing removed or altered — proven with the raw node blobs a
+  lockstep walk of the two roots touches, so the proof follows what changed
+  under the prefixes, not the store; verified with no store access, under
+  either addressing. Format `"recordstore-extension-proof"`, version 1
+  (`EXTENSION_FORMAT`). For append-only keyspaces: a register's
+  revocations (loopmarket's R5, the first user), a book's tombstones and
+  fills, a catalogue's categories across versions.
+  `tests/test_extension_proofs.py`, with a dict oracle over random
+  histories.
+
 ## [0.20.3] — 2026-09-18
 
 ### Fixed

@@ -1218,6 +1218,171 @@ def verify_proof(proof, root: Optional[Ref]):
 
 
 # ---------------------------------------------------------------------------
+# Extension proofs: a later root keeps an earlier root's records
+#
+# "Under these prefixes, root B holds every record root A held, unchanged" —
+# what an append-only keyspace promises (a register's revocations, a book's
+# tombstones and fills, a catalogue's categories), made checkable by anyone
+# who holds the two roots. Records under the prefixes may be *added* in B;
+# none may be removed or altered. Unchanged means an equal value reference,
+# and a reference is the content address of the value's bytes.
+#
+# The proof carries the raw trie nodes a lockstep walk of the two roots
+# touches, restricted to the prefixes: a subtree whose reference is the same
+# under both roots is skipped unopened (content addressing: equal reference,
+# equal subtree), keys only B holds are skipped, and the walk follows the
+# three shapes in which two canonical tries can differ (equal edges, one
+# edge a proper prefix of the other — a split — or diverging edges). Its
+# size is proportional to what changed under the prefixes, not to the
+# store. The verifier replays the same walk over the carried nodes alone,
+# indexed by their recomputed addresses, and fails on any record of A the
+# walk finds missing or changed in B, or on any node it needs and the proof
+# lacks. Format "recordstore-extension-proof", version 1.
+# ---------------------------------------------------------------------------
+
+EXTENSION_FORMAT = "recordstore-extension-proof"
+
+
+def _meets(key_prefix: bytes, prefix: bytes) -> bool:
+    """Can a subtree whose keys all start with `key_prefix` hold a key
+    starting with `prefix`?"""
+    return key_prefix.startswith(prefix) or prefix.startswith(key_prefix)
+
+
+def _items_under(load, node: _Node, acc: bytes, prefix: bytes):
+    """(key, value_ref, None) for every value under `prefix` in the subtree
+    rooted at `node` — each one missing from the other side. Children that
+    cannot hold the prefix are never loaded."""
+    stack = [(node, acc)]
+    while stack:
+        n, a = stack.pop()
+        full = a + n.prefix
+        if not _meets(full, prefix):
+            continue
+        if n.value_ref is not None and full.startswith(prefix):
+            yield (full, n.value_ref, None)
+        for byte in sorted(n.children, reverse=True):
+            key_prefix = full + bytes([byte])
+            if _meets(key_prefix, prefix):
+                stack.append((load(n.children[byte]), key_prefix))
+
+
+def _extension_faults(load, a: Optional[_Node], b: Optional[_Node], acc: bytes, prefix: bytes):
+    """(key, a_value_ref, b_value_ref|None) for every record of `a`'s
+    subtree under `prefix` that `b`'s subtree does not hold with the same
+    value reference — the same three shapes as `_Trie._diff_nodes`, but one
+    way: what only `b` holds is never visited."""
+    if a is None:
+        return
+    if not _meets(acc + a.prefix, prefix):
+        return
+    if b is None:
+        yield from _items_under(load, a, acc, prefix)
+        return
+    pa, pb = a.prefix, b.prefix
+    if pa == pb:
+        ka = acc + pa
+        if a.value_ref is not None and ka.startswith(prefix) and a.value_ref != b.value_ref:
+            yield (ka, a.value_ref, b.value_ref)
+        for byte in sorted(a.children):
+            ca, cb = a.children[byte], b.children.get(byte)
+            key_prefix = ka + bytes([byte])
+            if ca == cb or not _meets(key_prefix, prefix):
+                continue                      # shared subtree, or outside the prefix
+            yield from _extension_faults(load, load(ca), load(cb) if cb is not None else None,
+                                         key_prefix, prefix)
+        return
+    common = _common_prefix(pa, pb)
+    if len(common) < len(pa) and len(common) < len(pb):
+        yield from _items_under(load, a, acc, prefix)       # disjoint key ranges
+    elif len(common) == len(pa):
+        # a's edge is a proper prefix of b's: b lives under one of a's branches
+        ka = acc + pa
+        bb = pb[len(pa)]
+        b_split = _Node(pb[len(pa) + 1:], b.value_ref, b.children)
+        if a.value_ref is not None and ka.startswith(prefix):
+            yield (ka, a.value_ref, None)
+        for byte in sorted(a.children):
+            key_prefix = ka + bytes([byte])
+            if not _meets(key_prefix, prefix):
+                continue
+            child = load(a.children[byte])
+            if byte == bb:
+                yield from _extension_faults(load, child, b_split, key_prefix, prefix)
+            else:
+                yield from _items_under(load, child, key_prefix, prefix)
+    else:
+        # b's edge is a proper prefix of a's: a lives under one of b's branches
+        kb = acc + pb
+        ab = pa[len(pb)]
+        a_split = _Node(pa[len(pb) + 1:], a.value_ref, a.children)
+        cb = b.children.get(ab)
+        yield from _extension_faults(load, a_split, load(cb) if cb is not None else None,
+                                     kb + bytes([ab]), prefix)
+
+
+def _extension_walk(load, base: Optional[Ref], root: Optional[Ref], prefix: bytes):
+    if base is None or base == root:
+        return                                # nothing held before, or the same state
+    yield from _extension_faults(load, load(base), load(root) if root is not None else None,
+                                 b"", prefix)
+
+
+def _check_prefixes(prefixes) -> List[str]:
+    if isinstance(prefixes, str):
+        raise TypeError("prefixes is a list of strings, not one string")
+    out = sorted(set(prefixes))
+    if not out or not all(isinstance(p, str) for p in out):
+        raise ValueError("an extension proof names at least one string prefix ('' for every key)")
+    return out
+
+
+def verify_extension(proof, base: Optional[Ref], root: Optional[Ref]) -> Tuple[str, ...]:
+    """Check that `root` extends `base` under the proof's prefixes — every
+    record `base` held under them is held by `root` with the same value —
+    and return the prefixes proven. `base` and `root` are the references the
+    *verifier* trusts (None: the empty store). Raises ``ProofError`` on any
+    mismatch. Pure: reads no store, replays the walk over the node blobs the
+    envelope carries."""
+    if not isinstance(proof, dict) or proof.get("format") != EXTENSION_FORMAT:
+        raise ProofError(f"not a {EXTENSION_FORMAT} envelope")
+    if proof.get("version") != 1:
+        raise ProofError(f"unsupported proof version {proof.get('version')!r}")
+    if proof.get("base") != base or proof.get("root") != root:
+        raise ProofError(f"proof is about {proof.get('base')!r} -> {proof.get('root')!r}, "
+                         f"not {base!r} -> {root!r}")
+    ref_of = _resolve_addressing(proof.get("addressing"))
+    try:
+        prefixes = _check_prefixes(proof.get("prefixes") or [])
+    except (TypeError, ValueError) as exc:
+        raise ProofError(str(exc)) from None
+    if prefixes != list(proof.get("prefixes")):
+        raise ProofError("the proof's prefixes are not in canonical order")
+    nodes: Dict[Ref, bytes] = {}
+    try:
+        for blob_hex in proof.get("nodes", []):
+            blob = bytes.fromhex(blob_hex)
+            nodes[ref_of(blob)] = blob
+    except (TypeError, ValueError):
+        raise ProofError("malformed node bytes in proof") from None
+
+    def load(ref: Ref) -> _Node:
+        blob = nodes.get(ref)
+        if blob is None:
+            raise ProofError(f"the proof lacks node {ref}")
+        try:
+            return _Trie._decode(blob)
+        except (ValueError, KeyError):
+            raise ProofError(f"node {ref} is not a valid trie node") from None
+
+    for prefix in prefixes:
+        for key, _a, b in _extension_walk(load, base, root, prefix.encode("utf-8")):
+            what = "is absent from" if b is None else "changed in"
+            raise ProofError(f"{key.decode('utf-8', 'replace')!r} {what} the later root")
+    return tuple(prefixes)
+
+
+# ---------------------------------------------------------------------------
 # Pointers ("latest root")
 # ---------------------------------------------------------------------------
 
@@ -1870,6 +2035,58 @@ class RecordStore:
             "value": value_hex,
         }
         verify_proof(proof, self._root)   # never hand out a broken proof
+        return proof
+
+    def extends(self, base: Optional[Ref], prefixes: Iterable[str] = ("",)) -> bool:
+        """Does the committed root hold, under each of `prefixes`, every
+        record `base` held, unchanged (additions allowed)? The local check
+        behind `prove_extension`; `base`'s nodes must be in this store's
+        bytes store (a content-addressed store keeps every root it wrote)."""
+        load = self._trie._load
+        return not any(True for p in _check_prefixes(prefixes)
+                       for _ in _extension_walk(load, base, self._root, p.encode("utf-8")))
+
+    def prove_extension(self, base: Optional[Ref], prefixes: Iterable[str] = ("",),
+                        addressing: Optional[str] = None) -> dict:
+        """A verifiable proof that the committed root extends `base` under
+        `prefixes`: every record `base` held under them is still held, with
+        the same value; records may have been added, none removed or
+        altered. The result is a JSON-ready dict that
+        ``verify_extension(proof, base, root)`` checks with no store access;
+        its nodes are those of the two roots along what changed under the
+        prefixes, so its size follows the change, not the store. Raises
+        ``ValueError`` when the root does not extend `base` (the offending
+        key named) and when a key under the prefixes has staged changes —
+        proofs are statements about committed roots. Self-verified before
+        being returned, as `prove` is."""
+        prefixes = _check_prefixes(prefixes)
+        staged = [k for k in self._staged if any(k.startswith(p) for p in prefixes)]
+        if staged:
+            raise ValueError(f"{staged[0]!r} has staged, uncommitted changes under the "
+                             "prefixes — commit() first")
+        name = addressing or _addressing_name(self._blobs)
+        blobs: Dict[Ref, str] = {}
+
+        def load(ref: Ref) -> _Node:
+            blob = self._blobs.get(ref)       # the exact bytes behind the ref
+            blobs[ref] = blob.hex()
+            return _Trie._decode(blob)
+
+        for prefix in prefixes:
+            for key, _a, b in _extension_walk(load, base, self._root, prefix.encode("utf-8")):
+                what = "absent from" if b is None else "changed in"
+                raise ValueError(f"{self._root!r} does not extend {base!r} under {prefix!r}: "
+                                 f"{key.decode('utf-8', 'replace')!r} is {what} it")
+        proof = {
+            "format": EXTENSION_FORMAT,
+            "version": 1,
+            "addressing": name,
+            "base": base,
+            "root": self._root,
+            "prefixes": prefixes,
+            "nodes": sorted(blobs.values()),
+        }
+        verify_extension(proof, base, self._root)   # never hand out a broken proof
         return proof
 
     def put(self, key: str, value) -> None:

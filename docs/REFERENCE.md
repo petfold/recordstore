@@ -69,6 +69,8 @@ Everything importable from `recordstore` (exactly `__all__`):
 | `verify_proof` | check a proof against a root — no store, no network, no trust |
 | `ProofError` | the proof does not verify against the given root |
 | `PROOF_FORMAT` | proof envelope format name (`"recordstore-trie-proof"`) |
+| `verify_extension` | check that a later root keeps an earlier root's records under prefixes — no store |
+| `EXTENSION_FORMAT` | extension-proof envelope format name (`"recordstore-extension-proof"`) |
 
 ## 4. `RecordStore`
 
@@ -86,6 +88,8 @@ Everything importable from `recordstore` (exactly `__all__`):
 | `RecordStore.diff` | `(other_root)` | `(key, mine, theirs)` per differing key; `ABSENT` marks a missing side. O(divergence). |
 | `RecordStore.merge` | `(bytes_store, base, ours, theirs, resolver=None)` | classmethod: three-way merge → merged root. Unresolved conflicts raise `MergeConflict` (`.conflicts`). |
 | `RecordStore.prove` | `(key, addressing=None)` | inclusion-or-absence proof dict for a committed key. `ValueError` on staged keys or unknown addressing. |
+| `RecordStore.extends` | `(base, prefixes=("",))` | `bool`: the committed root holds, under each prefix, every record `base` held, unchanged (additions allowed). O(what changed under the prefixes). |
+| `RecordStore.prove_extension` | `(base, prefixes=("",), addressing=None)` | extension proof dict: the committed root extends `base` under the prefixes. `ValueError` naming the key when it does not, or on staged keys under the prefixes. |
 | `RecordStore.root` | property | root of the last committed state. |
 | `RecordStore.history` | `(limit=None)` | the states this store has been in, newest first, as `Version`s. `[]` when the pointer keeps no timeline. |
 | `RecordStore.undo` | `()` | step back one state; `None` at the start of the line. Moves the pointer, drops staged changes, destroys nothing. |
@@ -155,6 +159,9 @@ directory (flock, POSIX).
 | `RecordStore.prove` | `(key, addressing=None)` | JSON-ready envelope `{format, version, addressing, root, key, present, nodes, value}` carrying raw node blobs; self-verified before return. |
 | `verify_proof` | `(proof, root)` | pure function, no store access: returns the record (inclusion) or `ABSENT` (absence); raises `ProofError` on any mismatch. |
 | `PROOF_FORMAT` | constant | `"recordstore-trie-proof"`, version 1. Unknown formats must be ignored by readers. |
+| `RecordStore.prove_extension` | `(base, prefixes=("",), addressing=None)` | JSON-ready envelope `{format, version, addressing, base, root, prefixes, nodes}` carrying the raw node blobs of both roots along what changed under the prefixes; self-verified before return. |
+| `verify_extension` | `(proof, base, root)` | pure function: returns the proven prefixes when `root` holds every record `base` held under them with the same value; raises `ProofError` on a record missing or changed, a node the walk needs and the proof lacks, or any envelope mismatch. |
+| `EXTENSION_FORMAT` | constant | `"recordstore-extension-proof"`, version 1. |
 
 ## 10. Errors
 

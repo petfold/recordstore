@@ -18,8 +18,10 @@ from .recordstore import (
     DELETE,
     canonical_bytes,
     verify_proof,
+    verify_extension,
     ProofError,
     PROOF_FORMAT,
+    EXTENSION_FORMAT,
 )
 
 __all__ = [
@@ -42,6 +44,8 @@ __all__ = [
     "DELETE",
     "canonical_bytes",
     "verify_proof",
+    "verify_extension",
     "ProofError",
     "PROOF_FORMAT",
+    "EXTENSION_FORMAT",
 ]
