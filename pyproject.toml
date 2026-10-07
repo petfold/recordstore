@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "recordstore"
-version = "0.21.0"
+version = "0.21.1"
 description = "Versioned key-record store over a content-addressed bytes store (memory or Ethereum Swarm/Bee backends)"
 readme = "README.md"
 requires-python = ">=3.11"
@@ -33,7 +33,9 @@ stamps = ["swarmfs>=0.4.0"]
 # (before 0.9, addressing="swarm" needed swarmfs[feeds] — a latent gap
 # this extra never declared). Renamed from [local] (0.17.0-0.18.2),
 # which read as "local storage" rather than local-FIRST-with-Swarm.
-local-first-swarm = ["swarmfs>=0.9.0"]
+# 0.11.2: the sync worker re-sends blobs the network lost and runs its
+# confirmation checks 32 at a time (they ran one at a time, ~1.2 s each).
+local-first-swarm = ["swarmfs>=0.11.2"]
 # the whole store directly ON Swarm, no local layer — everything
 # swarm_store() needs (BeeBytesStore + SwarmFeedPointer + "auto" stamp
 # selection). The bundle downstreams used to hand-roll as

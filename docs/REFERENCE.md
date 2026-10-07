@@ -7,7 +7,7 @@ Compact, definition-first, no narrative. The tutorial lives in the
 `tests/test_reference.py` — if a name or parameter in this file and the
 code disagree, the suite fails.
 
-Package version this file describes: `0.21.0`.
+Package version this file describes: `0.21.1`.
 
 ## 1. Vocabulary
 
@@ -117,7 +117,7 @@ provides. Blobs are immutable and content-addressed.
 | `MemoryBytesStore` | `()` | sha256 refs; forgets on exit. |
 | `DirBytesStore` | `(path, addressing="sha256")` | `addressing="swarm"` shares Swarm's address space (needs `[swarm-addressing]`). |
 | `FsspecBytesStore` | `(url, addressing="sha256", **storage_options)` | any fsspec filesystem; refuses Swarm URLs (path-addressed ≠ content-addressed). |
-| `BeeBytesStore` | `(api_url, postage_batch_id="auto", deferred_upload=True, max_concurrent_reads=16, min_batch_ttl=86400)` | Swarm refs; `"auto"` picks the usable batch with the longest TTL. Reads are **not** verified — trust your own node (User Guide §7). |
+| `BeeBytesStore` | `(api_url, postage_batch_id="auto", deferred_upload=True, max_concurrent_reads=32, min_batch_ttl=86400)` | Swarm refs; `"auto"` picks the usable batch with the longest TTL. Reads are **not** verified — trust your own node (User Guide §7). |
 | `BeeBytesStore.batch_status` | `(*, buckets=False)` | `(StampInfo, BucketStats \| None)` — batch health for renewal cron jobs. |
 | `CachedBytesStore` | `(inner, max_bytes=67108864)` | LRU by bytes; safe (immutable blobs); unknown attributes delegate to `inner`. |
 
@@ -136,7 +136,7 @@ erasure coding off — equals what `POST /bytes` returns).
 
 | function | signature | gives |
 |---|---|---|
-| `swarm_store` | `(topic, *, api_url="http://localhost:1633", stamp="auto", signer=None, owner=None, feed_ttl=15.0, deferred_upload=True, max_concurrent_reads=16)` | a `RecordStore` with Bee blobs and a feed pointer — the one place Swarm is chosen. |
+| `swarm_store` | `(topic, *, api_url="http://localhost:1633", stamp="auto", signer=None, owner=None, feed_ttl=15.0, deferred_upload=True, max_concurrent_reads=32)` | a `RecordStore` with Bee blobs and a feed pointer — the one place Swarm is chosen. |
 | `local_first_store` | `(path, api_url=None, *, stamp="auto", max_bytes=None, cache_bytes=67108864, addressing="swarm", sync_policy=None, witness=None, publish_pointer=None, node_cache_size=65536)` | a `LocalFirstRecordStore`. `api_url=None` = local-only (push later). `max_bytes` budgets the directory (soft for pinned data). `publish_pointer` auto-publishes confirmed heads. |
 
 ## 8. `LocalFirstRecordStore` (adds to `RecordStore`)

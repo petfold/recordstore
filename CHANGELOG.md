@@ -6,6 +6,21 @@ All notable changes to this project are documented here. The format is based on
 
 ## [Unreleased]
 
+## [0.21.1] — 2026-10-08
+
+### Changed
+
+- **`BeeBytesStore` and `swarm_store` keep 32 reads in flight** by default
+  (`max_concurrent_reads`; it was a guessed 16). Measured against a Bee
+  2.8.2 light node on chunks it had to fetch from the network: about 4
+  reads/s per request in flight up to 32, so 60/s at 16 and 85–108/s at
+  32, then noisy with single reads waiting up to seconds. User Guide,
+  "Concurrency tuning across a real link", has the numbers.
+- **`local-first-swarm` requires swarmfs 0.11.2**, whose sync worker
+  re-sends the blobs the network lost (Bee can count a chunk delivered
+  when it was not) and runs its confirmation checks 32 at a time instead
+  of one at a time.
+
 ## [0.21.0] — 2026-09-29
 
 ### Added

@@ -476,7 +476,7 @@ class BeeBytesStore:
     """
 
     def __init__(self, api_url: str, postage_batch_id: str = "auto",
-                 deferred_upload: bool = True, max_concurrent_reads: int = 16,
+                 deferred_upload: bool = True, max_concurrent_reads: int = 32,
                  min_batch_ttl: int = AUTO_MIN_BATCH_TTL):
         import requests  # lazy: only needed for the real backend
         self.api_url = api_url.rstrip("/")
@@ -484,6 +484,11 @@ class BeeBytesStore:
             postage_batch_id = _auto_batch(self.api_url, min_batch_ttl)
         self.batch = postage_batch_id
         self.deferred = deferred_upload
+        # 32 in flight (16 was a guess): measured against a Bee 2.8.2 light
+        # node, reads of chunks it had to fetch scaled almost linearly to 32
+        # (about 4/s per request in flight, ~270 ms apiece) and were noisy
+        # beyond. The best number depends on the node, so it stays a knob
+        # (User Guide, "Concurrency tuning across a real link").
         self.max_concurrent_reads = max(1, max_concurrent_reads)
         # A persistent session with a connection pool: keep-alive avoids a fresh
         # TCP (and TLS) handshake on every blob op — the dominant per-op cost on
@@ -1984,7 +1989,7 @@ def swarm_store(
     owner: Optional[str] = None,
     feed_ttl: float = 15.0,
     deferred_upload: bool = True,
-    max_concurrent_reads: int = 16,
+    max_concurrent_reads: int = 32,
 ) -> "RecordStore":
     """A `RecordStore` that lives entirely on Ethereum Swarm.
 

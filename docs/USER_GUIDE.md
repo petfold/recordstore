@@ -424,7 +424,7 @@ be a stable hex string determined by the content.
 A dict keyed by SHA-256. Use it for tests and ephemeral work; `len(store)`
 gives the blob count. Data lives only as long as the object.
 
-### `BeeBytesStore(api_url, postage_batch_id="auto", deferred_upload=True, max_concurrent_reads=16, min_batch_ttl=86400)`
+### `BeeBytesStore(api_url, postage_batch_id="auto", deferred_upload=True, max_concurrent_reads=32, min_batch_ttl=86400)`
 
 A real [Swarm Bee](https://docs.ethswarm.org/) node over its HTTP API
 (`POST`/`GET /bytes`) — named for that endpoint specifically: `/bytes` is
@@ -513,7 +513,7 @@ stored is lost** — the batch keeps paying for what it has stamped.
 - **Concurrent I/O.** It keeps one pooled, keep-alive HTTP session (no
   handshake per op) and implements `get_many`/`put_many`, which recordstore
   uses to parallelise reads (`items()`, prefix scans) and a commit's value
-  writes. `max_concurrent_reads` (default 16) caps in-flight requests and sizes
+  writes. `max_concurrent_reads` (default 32) caps in-flight requests and sizes
   the connection pool; raise it on a high-latency link, lower it to be gentle
   on a shared node. It bounds concurrency — a huge `get_many` never opens more
   than this many sockets at once.
@@ -846,7 +846,7 @@ comparing roots see “no change.”
   walk fetches each node's children as a batch too), so `BeeBytesStore` fetches
   them concurrently instead of one serial round trip at a time — a large win on
   a high-latency link. Tune the parallelism with `BeeBytesStore(...,
-  max_concurrent_reads=N)` (default 16).
+  max_concurrent_reads=N)` (default 32).
 - `BeeBytesStore` keeps a pooled, keep-alive HTTP session, so no blob op pays a
   fresh TCP/TLS handshake — the single biggest per-op saving on a slow link.
 - On write, `commit()` writes bottom-up in concurrent batches: all value blobs
@@ -917,13 +917,18 @@ multi-release bets (e.g. the canonical-POT convergence track) live in the
   The one remaining rough edge is that the `after` hint reaches Bee through a
   private `swarm-bee` transport surface until bee-py#2 exposes it publicly.
   Full rationale is in the `SwarmFeedPointer` docstring in `recordstore.py`.
-- **Concurrency tuning across a real link.** The read/write parallelism cap
-  (`BeeBytesStore(max_concurrent_reads=…)`, default 16) is a single per-store
-  value; its optimum depends on the client↔node link and is best found with a
-  two-node benchmark — writer and reader on separate nodes (ideally separate
-  locations) so reads force real Swarm retrieval rather than local-store hits.
-  That measurement may also motivate splitting the cap into separate read/write
-  limits.
+- **Concurrency tuning across a real link.** The parallelism cap
+  (`BeeBytesStore(max_concurrent_reads=…)`) is 32 since 0.21.1; it was a
+  guessed 16. Measured 2026-10-07 against a Bee 2.8.2 light node, on chunks
+  the node had to fetch from the network (about 270 ms each): about 4
+  reads/s per request in flight up to 32 (60/s at 16, 85–108/s at 32), and
+  noisy beyond (64: 95–153/s, 128: 103–122/s) with single reads waiting up
+  to seconds. On chunks the node already holds (about 1 ms) the client's own
+  CPU is the limit, about 1.7 ms per request for the `requests` stack, and
+  the cap stops mattering beyond about 4. The optimum depends on the node;
+  swarmfs's `scripts/concurrency_sweep.py` measures yours. The same cap still
+  sizes writes (`put_many`), which were not measured — the reason to split it
+  into read and write limits if writes ever need tuning.
 - **Trie depth is bounded by recursion.** `insert`, `delete`, and `merge`
   recurse to the trie's depth, so a key set that *nests* very deeply — thousands
   of keys each a prefix of the next, or keys sharing a multi-thousand-byte
