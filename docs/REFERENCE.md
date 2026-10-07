@@ -117,10 +117,8 @@ provides. Blobs are immutable and content-addressed.
 | `MemoryBytesStore` | `()` | sha256 refs; forgets on exit. |
 | `DirBytesStore` | `(path, addressing="sha256")` | `addressing="swarm"` shares Swarm's address space (needs `[swarm-addressing]`). |
 | `FsspecBytesStore` | `(url, addressing="sha256", **storage_options)` | any fsspec filesystem; refuses Swarm URLs (path-addressed ≠ content-addressed). |
-| `BeeBytesStore` | `(api_url, postage_batch_id="auto", deferred_upload=True, max_concurrent_reads=16, min_batch_ttl=86400, confirm_on_commit=False, confirm_timeout=600.0, repair_after=60.0, keep_unconfirmed_bytes=256 MiB)` | Swarm refs; `"auto"` picks the usable batch with the longest TTL. Reads are **not** verified — trust your own node (User Guide §7). Remembers what it uploaded until `confirm()` sees it on the network. |
+| `BeeBytesStore` | `(api_url, postage_batch_id="auto", deferred_upload=True, max_concurrent_reads=16, min_batch_ttl=86400)` | Swarm refs; `"auto"` picks the usable batch with the longest TTL. Reads are **not** verified — trust your own node (User Guide §7). |
 | `BeeBytesStore.batch_status` | `(*, buckets=False)` | `(StampInfo, BucketStats \| None)` — batch health for renewal cron jobs. |
-| `BeeBytesStore.confirm` | `(timeout=None)` | blocks until every uploaded blob is retrievable from the network (`GET /stewardship`), pushing again any missing for `repair_after` s (directly from the remembered bytes, else `PUT /stewardship`); `TimeoutError` names how many remain. An accepted upload is not a delivered one. |
-| `BeeBytesStore.unconfirmed` / `.is_retrievable(ref)` / `.repaired` | | what is not yet confirmed; the network check for one ref; `{ref: times pushed again}`. |
 | `CachedBytesStore` | `(inner, max_bytes=67108864)` | LRU by bytes; safe (immutable blobs); unknown attributes delegate to `inner`. |
 
 Addressing schemes: `sha256` (hex SHA-256) and `swarm` (Bee BMT reference,
@@ -138,7 +136,7 @@ erasure coding off — equals what `POST /bytes` returns).
 
 | function | signature | gives |
 |---|---|---|
-| `swarm_store` | `(topic, *, api_url="http://localhost:1633", stamp="auto", signer=None, owner=None, feed_ttl=15.0, deferred_upload=True, max_concurrent_reads=16, confirm=True)` | a `RecordStore` with Bee blobs and a feed pointer — the one place Swarm is chosen. With `confirm` (a writable store), a commit waits until its blobs are retrievable from the network, repairing losses, before the feed moves. |
+| `swarm_store` | `(topic, *, api_url="http://localhost:1633", stamp="auto", signer=None, owner=None, feed_ttl=15.0, deferred_upload=True, max_concurrent_reads=16)` | a `RecordStore` with Bee blobs and a feed pointer — the one place Swarm is chosen. |
 | `local_first_store` | `(path, api_url=None, *, stamp="auto", max_bytes=None, cache_bytes=67108864, addressing="swarm", sync_policy=None, witness=None, publish_pointer=None, node_cache_size=65536)` | a `LocalFirstRecordStore`. `api_url=None` = local-only (push later). `max_bytes` budgets the directory (soft for pinned data). `publish_pointer` auto-publishes confirmed heads. |
 
 ## 8. `LocalFirstRecordStore` (adds to `RecordStore`)

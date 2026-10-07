@@ -6,27 +6,6 @@ All notable changes to this project are documented here. The format is based on
 
 ## [Unreleased]
 
-### Added
-
-- **An accepted upload is not a delivered one: `BeeBytesStore.confirm()`.**
-  Bee answers an upload once the blob is on the uploading node; delivery to
-  the neighbourhood that keeps it can fail unnoticed. Push-sync counts a
-  chunk delivered on a "shallow receipt" from a peer too far from its
-  neighbourhood to keep it and does not retry it: seen on Gnosis mainnet
-  in 2026-09 (29,602 shallow receipts) and on 2026-10-07 (36,589 of 372,313
-  pushes), both times with the node reporting everything synced.
-  `BeeBytesStore` now remembers what it uploaded; `confirm()` checks each
-  blob through `GET /stewardship` (a network check) and pushes again any
-  that stays missing for `repair_after` seconds, directly from the
-  remembered bytes while they fit in `keep_unconfirmed_bytes`, else with
-  `PUT /stewardship`. Only missing blobs are resent.
-- **`RecordStore.commit` confirms before the pointer moves** when the
-  bytes store asks for it (`confirm_on_commit`); `swarm_store(confirm=True)`
-  (the default for a writable store) does, so a feed never names a root
-  the network cannot serve. A failed confirmation leaves the commit
-  unpublished, like a failed blob write, and the next commit carries on.
-  Local-first stores get the same repair from swarmfs's `Syncer`.
-
 ## [0.21.0] — 2026-09-29
 
 ### Added

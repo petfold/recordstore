@@ -36,7 +36,6 @@ from __future__ import annotations
 import json
 import hashlib
 import os
-import threading
 import time
 import warnings
 from collections import OrderedDict
@@ -474,31 +473,11 @@ class BeeBytesStore:
     usable postage batch id for writes; ``"auto"`` picks one via swarmfs
     (validated, longest TTL — see ``_auto_batch``; selection only, buying
     is deliberately left to the caller).
-
-    **An accepted upload is not a delivered one.** Bee answers once a blob
-    is stamped and stored on the uploading node; reaching the neighbourhood
-    that keeps it happens afterwards, and can fail without the node
-    noticing: push-sync counts a chunk delivered on a "shallow receipt"
-    from a peer too far from the chunk's neighbourhood to keep it, and does
-    not retry it (seen on Gnosis mainnet in 2026-09 and again on
-    2026-10-07, when 36,589 of 372,313 pushes got one while the pusher
-    reported everything synced). So the store remembers what it uploaded
-    until `confirm()` has seen each blob retrievable from the network
-    (`GET /stewardship`, a network check, not a local one), and pushes a
-    blob that stays missing again: directly from the remembered bytes
-    while they fit in ``keep_unconfirmed_bytes``, else by asking the node
-    to re-push it (`PUT /stewardship`). With ``confirm_on_commit`` a
-    `RecordStore` over this store confirms before it moves its pointer, so
-    a feed never points readers at content the network cannot serve.
     """
 
     def __init__(self, api_url: str, postage_batch_id: str = "auto",
                  deferred_upload: bool = True, max_concurrent_reads: int = 16,
-                 min_batch_ttl: int = AUTO_MIN_BATCH_TTL,
-                 confirm_on_commit: bool = False,
-                 confirm_timeout: float = 600.0,
-                 repair_after: float = 60.0,
-                 keep_unconfirmed_bytes: int = 256 * 1024 * 1024):
+                 min_batch_ttl: int = AUTO_MIN_BATCH_TTL):
         import requests  # lazy: only needed for the real backend
         self.api_url = api_url.rstrip("/")
         if postage_batch_id in (None, "auto"):
@@ -515,20 +494,6 @@ class BeeBytesStore:
         )
         self._session.mount("http://", adapter)
         self._session.mount("https://", adapter)
-        #: Whether a RecordStore over this store confirms before moving its
-        #: pointer (`RecordStore.commit`); `swarm_store` turns it on.
-        self.confirm_on_commit = confirm_on_commit
-        self.confirm_timeout = confirm_timeout
-        self.repair_after = repair_after
-        self._keep = keep_unconfirmed_bytes
-        # ref -> bytes (None once dropped for the budget), oldest first
-        self._unconfirmed: "OrderedDict[Ref, Optional[bytes]]" = OrderedDict()
-        self._unconfirmed_bytes = 0
-        self._missing_since: Dict[Ref, float] = {}
-        self._lock = threading.Lock()
-        #: Blobs pushed again because the network could not serve them:
-        #: {ref: times}. A blob here was lost in delivery, not refused.
-        self.repaired: Dict[Ref, int] = {}
 
     def batch_status(self, *, buckets: bool = False):
         """This store's postage batch health — ``(StampInfo, BucketStats |
@@ -537,18 +502,13 @@ class BeeBytesStore:
         return batch_status(self.api_url, self.batch, buckets=buckets)
 
     def put(self, data: bytes) -> Ref:
-        ref = self._post(data, self.deferred)
-        self._remember(ref, data)
-        return ref
-
-    def _post(self, data: bytes, deferred: bool) -> Ref:
         r = self._session.post(
             f"{self.api_url}/bytes",
             data=data,
             headers={
                 "Content-Type": "application/octet-stream",
                 "Swarm-Postage-Batch-Id": self.batch,
-                "Swarm-Deferred-Upload": "true" if deferred else "false",
+                "Swarm-Deferred-Upload": "true" if self.deferred else "false",
             },
             timeout=120,
         )
@@ -576,96 +536,6 @@ class BeeBytesStore:
             )
         r.raise_for_status()
         return r.json()["reference"]
-
-    # -- delivery: confirm, and repair what did not arrive ----------------------
-
-    def _remember(self, ref: Ref, data: bytes) -> None:
-        with self._lock:
-            if ref in self._unconfirmed:
-                return
-            self._unconfirmed[ref] = data
-            self._unconfirmed_bytes += len(data)
-            # Over budget: keep the oldest refs to check, drop their bytes
-            # (a repair then asks the node to re-push instead).
-            for old in self._unconfirmed:
-                if self._unconfirmed_bytes <= self._keep:
-                    break
-                kept = self._unconfirmed[old]
-                if kept is not None:
-                    self._unconfirmed[old] = None
-                    self._unconfirmed_bytes -= len(kept)
-
-    def unconfirmed(self) -> List[Ref]:
-        """The blobs this store uploaded that `confirm()` has not yet seen
-        retrievable from the network."""
-        with self._lock:
-            return list(self._unconfirmed)
-
-    def is_retrievable(self, ref: Ref) -> bool:
-        """`GET /stewardship/{ref}`: Bee retrieves every chunk of `ref`
-        through the network from other peers, bypassing its own store."""
-        r = self._session.get(f"{self.api_url}/stewardship/{ref}", timeout=600)
-        r.raise_for_status()
-        return bool(r.json().get("isRetrievable"))
-
-    def _repush(self, ref: Ref) -> None:
-        with self._lock:
-            data = self._unconfirmed.get(ref)
-        if data is not None:
-            got = self._post(data, deferred=False)   # waits for receipts
-            if got != ref:
-                raise RuntimeError(
-                    f"pushing {ref[:16]}… again returned {got[:16]}…: the "
-                    "node's redundancy setting changed between uploads")
-        else:
-            r = self._session.put(f"{self.api_url}/stewardship/{ref}",
-                                  headers={"Swarm-Postage-Batch-Id": self.batch},
-                                  timeout=600)
-            r.raise_for_status()
-        self.repaired[ref] = self.repaired.get(ref, 0) + 1
-
-    def confirm(self, timeout: Optional[float] = None) -> None:
-        """Block until every blob this store uploaded is retrievable from the
-        network, pushing again any that stay missing for ``repair_after``
-        seconds (a fresh deferred upload needs time to spread). Raises
-        TimeoutError naming how many are still missing; those stay
-        remembered, so a later `confirm()` carries on."""
-        timeout = self.confirm_timeout if timeout is None else timeout
-        deadline = time.monotonic() + timeout
-        delay = 1.0
-        while True:
-            pending = self.unconfirmed()
-            if not pending:
-                return
-            workers = min(self.max_concurrent_reads, len(pending))
-            with ThreadPoolExecutor(max_workers=workers) as pool:
-                found = list(pool.map(self.is_retrievable, pending))
-            now = time.monotonic()
-            missing = []
-            with self._lock:
-                for ref, ok in zip(pending, found):
-                    if ok:
-                        kept = self._unconfirmed.pop(ref, None)
-                        self._unconfirmed_bytes -= len(kept or b"")
-                        self._missing_since.pop(ref, None)
-                    else:
-                        missing.append(ref)
-                        self._missing_since.setdefault(ref, now)
-            if not missing:
-                return
-            due = [ref for ref in missing
-                   if now - self._missing_since[ref] >= self.repair_after]
-            for ref in due:
-                self._repush(ref)
-                self._missing_since[ref] = time.monotonic()
-            if time.monotonic() >= deadline:
-                raise TimeoutError(
-                    f"{len(missing)} of the blobs this store uploaded are "
-                    f"still not retrievable from the network after {timeout}s "
-                    f"({len(self.repaired)} pushed again so far); they stay "
-                    "remembered, and the next confirm() carries on")
-            time.sleep(min(delay, max(0.0, deadline - time.monotonic())))
-            delay = min(delay * 2, 30.0)
 
     def get_many(self, refs: Iterable[Ref]) -> Dict[Ref, bytes]:
         """Fetch many references concurrently — the fast path for hydrating a
@@ -2115,7 +1985,6 @@ def swarm_store(
     feed_ttl: float = 15.0,
     deferred_upload: bool = True,
     max_concurrent_reads: int = 16,
-    confirm: bool = True,
 ) -> "RecordStore":
     """A `RecordStore` that lives entirely on Ethereum Swarm.
 
@@ -2133,10 +2002,6 @@ def swarm_store(
     read-only view of somebody else's feed. Writes need a postage batch:
     `stamp="auto"` picks a usable one (see `_auto_batch`).
 
-    With ``confirm`` (the default, for a writable store) a commit waits
-    until what it uploaded is retrievable from the network, pushing again
-    whatever the network lost, before the feed moves (see `BeeBytesStore`).
-
     Needs the `bee` and `feeds` extras:
     `pip install "recordstore[bee,feeds]"`.
     """
@@ -2150,7 +2015,6 @@ def swarm_store(
         stamp,
         deferred_upload=deferred_upload,
         max_concurrent_reads=max_concurrent_reads,
-        confirm_on_commit=confirm and signer is not None,
     )
     pointer = SwarmFeedPointer(
         api_url,
@@ -2548,7 +2412,6 @@ class RecordStore:
                 if reconcile:
                     new = self._reconcile(base, new, resolver, retries)
                 else:
-                    self._confirm_delivery()
                     self._set_pointer(new, message)
         finally:
             if journaled:
@@ -2558,16 +2421,6 @@ class RecordStore:
         self._staged.clear()
         self._root = new
         return new
-
-    def _confirm_delivery(self) -> None:
-        """Before the pointer moves: if the bytes store asks for it
-        (`BeeBytesStore(confirm_on_commit=True)`, as `swarm_store` sets),
-        wait until what it uploaded is retrievable from the network, so the
-        pointer never sends readers to content the network cannot serve.
-        A failure leaves the commit unpublished, like a failed blob write."""
-        blobs = self._blobs
-        if getattr(blobs, "confirm_on_commit", False):
-            blobs.confirm()
 
     def _set_pointer(self, root: Ref, message: Optional[str] = None) -> None:
         """Pointers that keep a timeline take the message; others never see it.
@@ -2693,7 +2546,6 @@ class RecordStore:
         for _ in range(max(1, retries)):
             current = pointer.get()
             if current == expected:
-                self._confirm_delivery()
                 if cas is None:
                     pointer.set(new)  # best-effort (no CAS at this layer)
                     return new

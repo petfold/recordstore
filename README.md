@@ -118,13 +118,6 @@ and nothing more:
   set with `pin(name, prefix)` / `fetch(prefix)`; collapse local history
   with `squash_history()`; a key whose bytes are temporarily unreachable
   raises `RecordUnavailable`, never a false `KeyError`.
-- **Delivery checked, losses repaired** — an upload Bee accepted is not
-  yet on the network: delivery can fail unnoticed (a "shallow receipt", seen
-  twice on Gnosis mainnet with the node reporting everything synced). Both
-  Swarm paths check what they uploaded with `/stewardship`, a network check,
-  and push again only what is missing: `BeeBytesStore.confirm()` (and
-  `swarm_store`'s commits, which confirm before the feed moves), and the
-  local-first store's background worker (swarmfs's `Syncer`).
 - **Multi-writer, no lock server** — `commit(reconcile=True)` makes concurrent
   writers converge: if the pointer moved under you it three-way merges and
   retries instead of overwriting. Race-free in-process; best-effort across
