@@ -6,6 +6,25 @@ All notable changes to this project are documented here. The format is based on
 
 ## [Unreleased]
 
+## [0.22.1] — 2026-10-08
+
+### Changed
+
+- **`diff()` and `merge()` load ahead, like the full walk.** The structural
+  diff behind both walked two tries recursively and fetched one node per
+  round trip. It is now a depth-first walk over pairs of subtrees (bounded
+  memory, as before) whose loading is separate: when the next pair holds
+  an unloaded node, the diff's own step is run level by level to load what
+  it will visit, bounded like `items()`'s lookahead. `diff()` fetches
+  changed values in windows of 256 (one `get` each before), and `merge()`
+  reads all its conflicts' values in one batch and writes the resolutions
+  in another (three reads and a write per conflict before). Counted on a
+  5,000-record store: a 200-key diff 1,731 rounds -> 9, a 2,000-key merge
+  13,383 -> 28, with the same blobs fetched. The order of `diff()`'s
+  results changes (it was never promised). `tests/test_walk.py` gains four
+  tests, one of which checks the lookahead fetches nothing the diff does
+  not visit.
+
 ## [0.22.0] — 2026-10-08
 
 ### Changed

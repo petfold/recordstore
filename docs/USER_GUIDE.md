@@ -855,6 +855,12 @@ comparing roots see “no change.”
   trie node with children (about 2,800 rounds, ten minutes on a Bee light
   node). Tune the parallelism with `BeeBytesStore(...,
   max_concurrent_reads=N)` (default 32).
+- `diff()` and `merge()` walk two tries side by side and load ahead the same
+  way (since 0.22.1); `diff()` fetches the changed values in windows of 256,
+  and `merge()` reads its conflicts' values in one batch and writes their
+  resolutions in another. Counted on a 5,000-record store: a 200-key diff is
+  9 rounds where it was 1,731, a 2,000-key merge 28 where it was 13,383. The
+  blobs fetched are the same; only the rounds change.
 - `BeeBytesStore` keeps a pooled, keep-alive HTTP session, so no blob op pays a
   fresh TCP/TLS handshake — the single biggest per-op saving on a slow link.
 - On write, `commit()` writes bottom-up in concurrent batches: all value blobs

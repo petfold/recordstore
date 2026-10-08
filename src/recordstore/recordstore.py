@@ -921,96 +921,128 @@ class _Trie:
 
     # -- diff (structural, prunes shared subtrees) --------------------------
 
-    def _node_or_none(self, ref: Optional[Ref]) -> Optional[_Node]:
-        return self._load(ref) if ref is not None else None
-
-    def _node_items(self, node: _Node, acc: bytes):
-        """(key, value_ref) for every value in the subtree rooted at `node`
-        (which may be synthetic, i.e. not itself stored)."""
-        stack = [(node, acc)]
-        while stack:
-            n, a = stack.pop()
-            full = a + n.prefix
-            if n.value_ref is not None:
-                yield (full, n.value_ref)
-            for byte, cref in n.children.items():
-                stack.append((self._load(cref), full + bytes([byte])))
-
     def _diff(self, a_root: Optional[Ref], b_root: Optional[Ref]):
         """Yield (key, a_value_ref|None, b_value_ref|None) for every key where
         `a_root` and `b_root` differ. Subtrees with equal refs are pruned, so
-        the cost is proportional to the difference, not the dataset."""
+        the cost is proportional to the difference, not the dataset.
+
+        Depth-first over pairs of subtrees, so memory stays bounded; loading
+        is separate, as in `items`: whenever the next pair holds an unloaded
+        node, `_prefetch_pairs` loads ahead level by level, so a network
+        store pays about one round per trie level per lookahead window
+        instead of one per differing node."""
         if a_root == b_root:
             return
-        yield from self._diff_nodes(
-            self._node_or_none(a_root), self._node_or_none(b_root), b"")
+        stack = [(a_root, b_root, b"")]
+        while stack:
+            if self._unloaded(stack[-1]):
+                self._prefetch_pairs(stack)
+            a, b, acc = stack.pop()
+            values, pairs = self._diff_step(self._as_node(a),
+                                            self._as_node(b), acc)
+            yield from values
+            stack.extend(pairs)
 
-    def _diff_nodes(self, a: Optional[_Node], b: Optional[_Node], acc: bytes):
-        if a is None:
-            if b is not None:
-                for k, v in self._node_items(b, acc):
-                    yield (k, None, v)
-            return
-        if b is None:
-            for k, v in self._node_items(a, acc):
-                yield (k, v, None)
-            return
+    def _as_node(self, side) -> Optional[_Node]:
+        """A pair's side is a ref, a split node (not itself stored), or None."""
+        return self._load(side) if isinstance(side, str) else side
+
+    def _unloaded(self, pair) -> bool:
+        return any(isinstance(x, str) and x not in self._cache
+                   for x in pair[:2])
+
+    @staticmethod
+    def _diff_step(a: Optional[_Node], b: Optional[_Node], acc: bytes):
+        """One pair of subtrees: the differing values at their tops, and the
+        pairs still to compare. Equal prefixes compare child by child,
+        skipping equal refs; diverging prefixes hold disjoint keys; a prefix
+        that extends the other's lives under one of the other's branches."""
+        values: list = []
+        pairs: list = []
+        if a is None or b is None:
+            node = a if b is None else b
+            if node is None:
+                return values, pairs
+            full = acc + node.prefix
+            if node.value_ref is not None:
+                values.append((full, node.value_ref, None) if b is None
+                              else (full, None, node.value_ref))
+            for byte, cref in node.children.items():
+                key = full + bytes([byte])
+                pairs.append((cref, None, key) if b is None
+                             else (None, cref, key))
+            return values, pairs
 
         pa, pb = a.prefix, b.prefix
         if pa == pb:
             ka = acc + pa
             if a.value_ref != b.value_ref:
-                yield (ka, a.value_ref, b.value_ref)
+                values.append((ka, a.value_ref, b.value_ref))
             for byte in set(a.children) | set(b.children):
                 ca, cb = a.children.get(byte), b.children.get(byte)
-                if ca == cb:
-                    continue  # shared subtree
-                yield from self._diff_nodes(
-                    self._node_or_none(ca), self._node_or_none(cb),
-                    ka + bytes([byte]))
-            return
+                if ca != cb:  # equal refs: a shared subtree
+                    pairs.append((ca, cb, ka + bytes([byte])))
+            return values, pairs
 
         common = _common_prefix(pa, pb)
         if len(common) < len(pa) and len(common) < len(pb):
             # prefixes diverge => the two subtrees cover disjoint keys
-            for k, v in self._node_items(a, acc):
-                yield (k, v, None)
-            for k, v in self._node_items(b, acc):
-                yield (k, None, v)
+            pairs.append((a, None, acc))
+            pairs.append((None, b, acc))
         elif len(common) == len(pa):
             # a's key is a proper prefix of b's: b lives under one of a's branches
             ka = acc + pa
             bb = pb[len(pa)]
             b_split = _Node(pb[len(pa) + 1:], b.value_ref, b.children)
             if a.value_ref is not None:
-                yield (ka, a.value_ref, None)  # no key at ka on b's side
+                values.append((ka, a.value_ref, None))  # no key at ka on b's side
             for byte, cref in a.children.items():
-                if byte == bb:
-                    yield from self._diff_nodes(
-                        self._load(cref), b_split, ka + bytes([byte]))
-                else:
-                    for k, v in self._node_items(self._load(cref), ka + bytes([byte])):
-                        yield (k, v, None)
+                pairs.append((cref, b_split if byte == bb else None,
+                              ka + bytes([byte])))
             if bb not in a.children:
-                for k, v in self._node_items(b_split, ka + bytes([bb])):
-                    yield (k, None, v)
+                pairs.append((None, b_split, ka + bytes([bb])))
         else:
             # symmetric: b's key is a proper prefix of a's
             kb = acc + pb
             ab = pa[len(pb)]
             a_split = _Node(pa[len(pb) + 1:], a.value_ref, a.children)
             if b.value_ref is not None:
-                yield (kb, None, b.value_ref)
+                values.append((kb, None, b.value_ref))
             for byte, cref in b.children.items():
-                if byte == ab:
-                    yield from self._diff_nodes(
-                        a_split, self._load(cref), kb + bytes([byte]))
-                else:
-                    for k, v in self._node_items(self._load(cref), kb + bytes([byte])):
-                        yield (k, None, v)
+                pairs.append((a_split if byte == ab else None, cref,
+                              kb + bytes([byte])))
             if ab not in b.children:
-                for k, v in self._node_items(a_split, kb + bytes([ab])):
-                    yield (k, v, None)
+                pairs.append((a_split, None, kb + bytes([ab])))
+        return values, pairs
+
+    def _prefetch_pairs(self, stack) -> None:
+        """`_prefetch` for a diff: load the unloaded sides of the pairs on
+        `stack` (nearest first) and, level by level, of the pairs they
+        expand into by `_diff_step` itself, so what is loaded is what the
+        diff will visit. Same bounds as `_prefetch`."""
+        budget = max(1, min(self.WALK_LOOKAHEAD, self._cache.maxsize // 2))
+        frontier = list(reversed(stack))  # nearest to be visited first
+        fetched = visited = 0
+        while frontier and fetched < budget and visited < 2 * budget:
+            missing, seen = [], set()
+            for a, b, _ in frontier:
+                for side in (a, b):
+                    if (isinstance(side, str) and side not in self._cache
+                            and side not in seen
+                            and len(missing) < budget - fetched):
+                        seen.add(side)
+                        missing.append(side)
+            if missing:
+                self._load_many(missing)
+                fetched += len(missing)
+            nxt = []
+            for a, b, acc in frontier:
+                if self._unloaded((a, b)):
+                    continue  # beyond this round's budget
+                visited += 1
+                nxt.extend(self._diff_step(self._as_node(a),
+                                           self._as_node(b), acc)[1])
+            frontier = nxt
 
     def insert(self, root: Optional[Ref], key: bytes, value_ref: Ref) -> Ref:
         if root is None:
@@ -1327,7 +1359,7 @@ def _items_under(load, node: _Node, acc: bytes, prefix: bytes):
 def _extension_faults(load, a: Optional[_Node], b: Optional[_Node], acc: bytes, prefix: bytes):
     """(key, a_value_ref, b_value_ref|None) for every record of `a`'s
     subtree under `prefix` that `b`'s subtree does not hold with the same
-    value reference — the same three shapes as `_Trie._diff_nodes`, but one
+    value reference — the same three shapes as `_Trie._diff_step`, but one
     way: what only `b` holds is never visited."""
     if a is None:
         return
@@ -2360,14 +2392,27 @@ class RecordStore:
         no diff; commit first. To compare two arbitrary published roots,
         open one as a snapshot: ``RecordStore.at(a, blobs).diff(b)``.
         """
-        for kb, mine_ref, theirs_ref in self._trie._diff(self._root,
-                                                         other_root):
+        # Values are fetched in windows, like `items`.
+        window = max(256, getattr(self._blobs, "max_concurrent_reads", 256))
+        buf: list = []
+        for entry in self._trie._diff(self._root, other_root):
+            buf.append(entry)
+            if len(buf) >= window:
+                yield from self._flush_diff(buf)
+                buf = []
+        if buf:
+            yield from self._flush_diff(buf)
+
+    def _flush_diff(self, buf):
+        refs = list({r for _, mine, theirs in buf for r in (mine, theirs)
+                     if r is not None})
+        blobs = self._fetch_blobs(refs) if refs else {}
+        for kb, mine_ref, theirs_ref in buf:
             yield (
                 kb.decode("utf-8"),
-                ABSENT if mine_ref is None
-                else _decode_value(self._blobs.get(mine_ref)),
+                ABSENT if mine_ref is None else _decode_value(blobs[mine_ref]),
                 ABSENT if theirs_ref is None
-                else _decode_value(self._blobs.get(theirs_ref)),
+                else _decode_value(blobs[theirs_ref]),
             )
 
     def _flush_items(self, buf, refs: List[Ref]):
@@ -2660,30 +2705,26 @@ class RecordStore:
         their_diff = {k: (bv, sv) for k, bv, sv in trie._diff(base, theirs)}
 
         changes: Dict[bytes, object] = {}     # key -> value_ref | _TOMBSTONE
-        conflicts: List[str] = []
+        conflicts: List[bytes] = []
         for k in set(our_diff) | set(their_diff):
             if k in our_diff and k in their_diff:
                 bv, ov = our_diff[k]
-                tv = their_diff[k][1]
-                if ov == tv:
-                    merged = ov               # both changed it the same way
-                elif resolver is None:
-                    conflicts.append(k.decode("utf-8"))
+                if ov != their_diff[k][1]:
+                    conflicts.append(k)        # changed differently on both
                     continue
-                else:
-                    decode = (lambda r: _decode_value(bytes_store.get(r))
-                              if r is not None else ABSENT)
-                    res = resolver(k.decode("utf-8"), decode(bv), decode(ov), decode(tv))
-                    merged = None if res is DELETE else bytes_store.put(_encode_value(res))
+                merged = ov                    # both changed it the same way
             elif k in our_diff:
                 bv, merged = our_diff[k]       # changed by us only
             else:
                 bv, merged = their_diff[k]     # changed by them only
-            if merged != bv:                   # (a resolver could land back on base)
+            if merged != bv:
                 changes[k] = merged if merged is not None else _TOMBSTONE
 
+        if conflicts and resolver is None:
+            raise MergeConflict([k.decode("utf-8") for k in conflicts])
         if conflicts:
-            raise MergeConflict(conflicts)
+            changes.update(cls._resolve(bytes_store, sorted(conflicts),
+                                        our_diff, their_diff, resolver))
 
         # Apply only the diff to base (O(diff) node writes, bulk-flushed).
         root = base
@@ -2702,6 +2743,38 @@ class RecordStore:
         finally:
             trie._reset_buffer()
         return root
+
+
+    @staticmethod
+    def _resolve(bytes_store, conflicts, our_diff, their_diff, resolver):
+        """Settle conflicting keys with `resolver`, reading their values in
+        one batch and writing the resolutions in another (one round each
+        on a network store, not three reads and a write per key)."""
+        trio = {k: (our_diff[k][0], our_diff[k][1], their_diff[k][1])
+                for k in conflicts}
+        refs = list({r for t in trio.values() for r in t if r is not None})
+        get_many = getattr(bytes_store, "get_many", None)
+        blobs = (get_many(refs) if get_many
+                 else {r: bytes_store.get(r) for r in refs})
+        decode = (lambda r: _decode_value(blobs[r]) if r is not None
+                  else ABSENT)
+        kept: Dict[bytes, object] = {}
+        for k in conflicts:
+            bv, ov, tv = trio[k]
+            kept[k] = resolver(k.decode("utf-8"), decode(bv), decode(ov),
+                               decode(tv))
+        writes = [k for k in conflicts if kept[k] is not DELETE]
+        datas = [_encode_value(kept[k]) for k in writes]
+        put_many = getattr(bytes_store, "put_many", None)
+        new = (put_many(datas) if put_many
+               else [bytes_store.put(d) for d in datas])
+        refs_of = dict(zip(writes, new))
+        changes: Dict[bytes, object] = {}
+        for k in conflicts:
+            merged = refs_of.get(k)            # None: the resolver deleted it
+            if merged != trio[k][0]:           # it could land back on base
+                changes[k] = merged if merged is not None else _TOMBSTONE
+        return changes
 
 
 # ---------------------------------------------------------------------------

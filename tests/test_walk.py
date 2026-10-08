@@ -8,6 +8,10 @@ with children: 2,679 rounds for a 5,380-record store, about ten minutes
 against a Bee light node. They now load ahead level by level, so the
 rounds follow the trie's depth. These tests count rounds (calls into the
 blob store) rather than time them.
+
+A diff (and so `merge`, and every consumer folding one root into another)
+walks two tries at once and had the same one-round-per-node cost; it now
+loads ahead the same way.
 """
 
 import math
@@ -33,6 +37,12 @@ class Counting:
         self.calls += 1
         self.fetched += len(refs)
         return self.inner.get_many(refs)
+
+    def put(self, data):
+        return self.inner.put(data)
+
+    def put_many(self, datas):
+        return self.inner.put_many(datas)
 
 
 def _store(n=3000, seed=7):
@@ -98,3 +108,60 @@ def test_a_prefix_scan_loads_only_its_subtree():
     # down — never the whole store
     assert counting.fetched < 4 * len(under) + 40 * levels
     assert counting.fetched < nodes / 4
+
+
+def _diverged(blobs, root, keys, changes, seed):
+    """A root that changes `changes` records of `root` and adds a tenth as
+    many, spread across the key space."""
+    rng = random.Random(seed)
+    store = RecordStore(blobs, root=root)
+    for k in rng.sample(keys, changes):
+        store.put(k, {"changed": seed})
+    for i in range(changes // 10):
+        store.put(f"new{seed}/{i}", i)
+    return store.commit()
+
+
+def test_a_diff_costs_rounds_per_level_not_per_node():
+    blobs, root, keys = _store(n=5000, seed=3)
+    _, levels = _shape(blobs, root)
+    other = _diverged(blobs, root, keys, 200, seed=1)
+    counting = Counting(blobs)
+    changed = list(RecordStore.at(root, counting).diff(other))
+    assert len(changed) == 220
+    # two tries walked together, plus one window of values
+    assert counting.calls <= 2 * (levels + 1) + 1
+    assert counting.fetched > 50 * counting.calls  # was one blob per round
+
+
+def test_the_lookahead_fetches_only_what_the_diff_visits(monkeypatch):
+    blobs, root, keys = _store(n=2000, seed=4)
+    other = _diverged(blobs, root, keys, 100, seed=2)
+    ahead = Counting(blobs)
+    got = sorted(RecordStore.at(root, ahead).diff(other))
+    monkeypatch.setattr(_Trie, "WALK_LOOKAHEAD", 1)  # one node at a time
+    one = Counting(blobs)
+    assert sorted(RecordStore.at(root, one).diff(other)) == got
+    assert ahead.fetched == one.fetched
+    assert ahead.calls < one.calls / 20
+
+
+def test_a_merge_reads_both_sides_in_few_rounds():
+    blobs, root, keys = _store(n=5000, seed=3)
+    _, levels = _shape(blobs, root)
+    ours = _diverged(blobs, root, keys, 500, seed=1)
+    theirs = _diverged(blobs, root, keys, 500, seed=2)
+    counting = Counting(blobs)
+    merged = RecordStore.merge(counting, root, ours, theirs,
+                               resolver=lambda k, b, o, t: "both")
+    assert counting.calls <= 4 * (levels + 1) + 10  # two diffs, conflicts
+    view = RecordStore.at(merged, blobs)
+    assert view.get("new1/0") == 0 and view.get("new2/0") == 0
+
+
+def test_a_diff_with_a_tiny_node_cache_is_still_exact():
+    blobs, root, keys = _store(n=800, seed=6)
+    other = _diverged(blobs, root, keys, 60, seed=3)
+    full = sorted(RecordStore.at(root, blobs).diff(other))
+    tiny = RecordStore(Counting(blobs), root=root, node_cache_size=8)
+    assert sorted(tiny.diff(other)) == full
