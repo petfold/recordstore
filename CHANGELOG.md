@@ -6,6 +6,8 @@ All notable changes to this project are documented here. The format is based on
 
 ## [Unreleased]
 
+## [0.21.2] — 2026-10-08
+
 ### Changed
 
 - **A full walk of the trie costs rounds per level, not per node.**
