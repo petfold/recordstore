@@ -6,6 +6,35 @@ All notable changes to this project are documented here. The format is based on
 
 ## [Unreleased]
 
+## [0.22.0] — 2026-10-08
+
+### Changed
+
+- **recordstore reaches Bee only through swarmfs.** `BeeBytesStore` ran on
+  `requests` and `SwarmFeedPointer` on the `swarm-bee` package, beside the
+  swarmfs client that local-first stores, stamp selection and Swarm
+  addressing already used: three HTTP clients. Both now run on swarmfs
+  (>= 0.13), with the same names, arguments and behaviour; the `bee`,
+  `feeds` and `swarm-only` extras no longer pull `requests` or `swarm-bee`
+  (swarm-bee's last release was 2026-05-20, and the pointer depended on one
+  of its private methods for Bee's `after` hint, which swarmfs now exposes).
+- **Signing is libsecp256k1's, through `swarmfs.signer`** (coincurve): the
+  pointer's feed updates are byte-identical to swarm-bee's (tested), so
+  feeds written before 0.22 read the same and either side follows the
+  other's; checked live against a Bee 2.8.2 node.
+- **Reading or verifying a feed needs no compiled dependency.**
+  `verify_feed_update`, `verify_equivocation` and a read-only pointer need
+  swarmfs only; signature recovery falls back to pure Python, which
+  handles no secret. Every chunk the pointer reads is verified, as before.
+- `BeeBytesStore`: a refused postage batch is still a `RuntimeError` saying
+  which kind of refusal it is; other HTTP errors are swarmfs's
+  `BeeAPIError` (an `OSError`) where they were `requests.HTTPError`.
+
+### Added
+
+- `SwarmFeedPointer.owner` and `.topic` (hex), in place of the internals
+  tests used to read.
+
 ## [0.21.2] — 2026-10-08
 
 ### Changed

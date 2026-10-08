@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "recordstore"
-version = "0.21.2"
+version = "0.22.0"
 description = "Versioned key-record store over a content-addressed bytes store (memory or Ethereum Swarm/Bee backends)"
 readme = "README.md"
 requires-python = ">=3.11"
@@ -21,7 +21,9 @@ classifiers = [
 license = { text = "BSD-3-Clause" }
 
 [project.optional-dependencies]
-bee = ["requests"]
+# Since 0.22 every route to Bee is swarmfs's (BeeBytesStore and
+# SwarmFeedPointer included); requests and swarm-bee are gone.
+bee = ["swarmfs>=0.13.0"]
 fsspec = ["fsspec"]
 # postage_batch_id="auto", batch_status(), and the expiry/bucket warnings.
 # 0.4.0 is the floor: earlier swarmfs has no StampManager.list_batches or
@@ -40,11 +42,13 @@ local-first-swarm = ["swarmfs>=0.11.2"]
 # swarm_store() needs (BeeBytesStore + SwarmFeedPointer + "auto" stamp
 # selection). The bundle downstreams used to hand-roll as
 # recordstore[bee,feeds,stamps].
-swarm-only = ["requests", "swarm-bee", "swarmfs>=0.9.0"]
+swarm-only = ["swarmfs[feeds]>=0.13.0"]
 # plain swarmfs suffices since 0.9.0 (keccak in base; [feeds] is now
 # signing-only and irrelevant to addressing)
 swarm-addressing = ["swarmfs>=0.9.0"]
-feeds = ["swarm-bee"]
+# a signed Swarm feed: swarmfs's feed operations and its signer (coincurve,
+# i.e. libsecp256k1). Reading or verifying a feed needs only `bee`.
+feeds = ["swarmfs[feeds]>=0.13.0"]
 test = ["pytest"]
 
 [tool.setuptools.packages.find]

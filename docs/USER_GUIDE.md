@@ -385,8 +385,9 @@ What a feed cannot prove is time. The timestamp is the writer's own claim —
 binding on the writer, who signed it, but not a clock — and "no newer root
 existed at t" cannot be shown from Swarm at all. Where a reader needs that,
 the roots must be anchored somewhere with a trusted clock (a chain).
-Verification needs the `swarm-bee` package (the `feeds` extra) for the chunk
-arithmetic.
+Verification needs swarmfs (the `bee` extra) for the chunk arithmetic, and no
+compiled dependency: signature recovery falls back to pure Python, which
+handles no secret.
 
 ### Error summary
 
@@ -432,8 +433,8 @@ Bee's blob-level API, distinct from the raw `/chunks/{address}` single-chunk
 primitive that this class does not use. References are Swarm BMT
 references. Requirements and behavior:
 
-- **`requests`** is imported lazily inside the constructor — install the
-  `[bee]` extra.
+- **swarmfs** carries the HTTP (since 0.22; it was `requests`), imported
+  lazily inside the constructor — install the `[bee]` extra.
 - **A usable postage batch is required for writes.** The default
   `postage_batch_id="auto"` picks the node's usable batch with the
   longest remaining validity, via [swarmfs](https://github.com/petfold/swarmfs)
@@ -511,14 +512,15 @@ stored is lost** — the batch keeps paying for what it has stamped.
 - Values larger than one 4 KB chunk are handled transparently by Bee's
   splitter — any payload yields exactly one reference.
 - **Concurrent I/O.** It keeps one pooled, keep-alive HTTP session (no
-  handshake per op) and implements `get_many`/`put_many`, which recordstore
-  uses to parallelise reads (`items()`, prefix scans) and a commit's value
-  writes. `max_concurrent_reads` (default 32) caps in-flight requests and sizes
-  the connection pool; raise it on a high-latency link, lower it to be gentle
-  on a shared node. It bounds concurrency — a huge `get_many` never opens more
-  than this many sockets at once.
-- HTTP timeouts are 120 s; a 404 surfaces as `KeyError`, other HTTP errors
-  as `requests.HTTPError`.
+  handshake per op), swarmfs's, and implements `get_many`/`put_many`, which
+  recordstore uses to parallelise reads (`items()`, prefix scans) and a
+  commit's value writes. `max_concurrent_reads` (default 32) caps in-flight
+  requests; raise it on a high-latency link, lower it to be gentle on a shared
+  node. It bounds concurrency — a huge `get_many` never has more than this many
+  requests in flight at once.
+- HTTP timeouts are 120 s; a 404 surfaces as `KeyError`, a refused postage
+  batch as `RuntimeError` saying which kind of refusal it is, other HTTP
+  errors as swarmfs's `BeeAPIError` (an `OSError`).
 
 A quick smoke against a local node:
 
@@ -685,9 +687,12 @@ works.
 - **`SwarmFeedPointer(api_url, topic, *, signer=None, owner=None,
   postage_batch_id=None, ...)`** — the "latest root" as an owner-signed
   Swarm feed. Each `set` publishes a signed single-owner chunk (SOC);
-  `get` resolves the latest via a feed lookup. Needs the `swarm-bee`
-  package (`pip install "recordstore[feeds]"`) for the BMT/secp256k1
-  signing, imported lazily so the core stays stdlib-only.
+  `get` resolves the latest via a feed lookup. Needs swarmfs with coincurve
+  (`pip install "recordstore[feeds]"`): swarmfs carries the requests and
+  signs through `swarmfs.signer`, whose cryptography is libsecp256k1's.
+  Imported lazily so the core stays stdlib-only; a read-only pointer needs no
+  coincurve. Until 0.22 this ran on the `swarm-bee` package; feeds written
+  either way are byte-identical and read the same.
 
   Pass a `signer` (32-byte secp256k1 private key, hex) to read and write —
   the owner address is derived from it; or an `owner` address (hex) for a
@@ -910,15 +915,13 @@ multi-release bets (e.g. the canonical-POT convergence track) live in the
   monotonic write-index floor, and retry-until-stable reads with a stale-early
   guard, following swarmfs's `bzzf://` layer. As of v0.4.1 it also passes Bee's
   `after` index hint once it has a confirmed index to resume from, so lookups
-  start near the tip; because `swarm-bee`'s typed API does not expose `after`
-  (see bee-py#2) this goes through the client transport. As of v0.4.1 index
+  start near the tip (since 0.22 through swarmfs's public `feed_head(after=)`;
+  before, through a private swarm-bee surface). As of v0.4.1 index
   discovery no longer depends on the flaky lookup at all — it probes the feed's
   SOC chunks directly (individually retrievable even when the lookup 404s), so
   cold reads resolve in one attempt and an empty feed returns `None` at once
   (and since v0.20.3 that probe retries a transient 500 with the pointer's
   backoff instead of raising at the first one, on the write path as well).
-  The one remaining rough edge is that the `after` hint reaches Bee through a
-  private `swarm-bee` transport surface until bee-py#2 exposes it publicly.
   Full rationale is in the `SwarmFeedPointer` docstring in `recordstore.py`.
 - **Concurrency tuning across a real link.** The parallelism cap
   (`BeeBytesStore(max_concurrent_reads=…)`) is 32 since 0.21.1; it was a
@@ -927,8 +930,9 @@ multi-release bets (e.g. the canonical-POT convergence track) live in the
   reads/s per request in flight up to 32 (60/s at 16, 85–108/s at 32), and
   noisy beyond (64: 95–153/s, 128: 103–122/s) with single reads waiting up
   to seconds. On chunks the node already holds (about 1 ms) the client's own
-  CPU is the limit, about 1.7 ms per request for the `requests` stack, and
-  the cap stops mattering beyond about 4. The optimum depends on the node;
+  CPU is the limit — about 1.7 ms per request for the `requests` stack this
+  store used until 0.22, about 0.6 ms for swarmfs's aiohttp client it uses
+  now — and the cap stops mattering beyond about 4. The optimum depends on the node;
   swarmfs's `scripts/concurrency_sweep.py` measures yours. The same cap still
   sizes writes (`put_many`), which were not measured — the reason to split it
   into read and write limits if writes ever need tuning.
@@ -969,8 +973,8 @@ The test suite doubles as executable documentation:
   (`BEE_API`/`BEE_BATCH` env vars; skips otherwise).
 - `tests/test_recordstore_feed.py` — `SwarmFeedPointer` over a live Bee node
   (read-your-writes, network resolution, read-only pointer, end-to-end
-  `RecordStore` reopen); skips unless `BEE_API` is set and `swarm-bee` is
-  installed.
+  `RecordStore` reopen); skips unless `BEE_API` is set and the `feeds` extra
+  (swarmfs with coincurve) is installed.
 - `tests/test_boundaries.py` — enforces that module-level imports stay
   stdlib-only.
 

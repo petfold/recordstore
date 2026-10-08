@@ -1,26 +1,20 @@
 """The feed pointer's chunk probe retries a transient 500 (0.20.3): an absent
 chunk answers 404 definitively, a struggling node answers 500 for the same
 chunk and must be asked again — `set` probes cold and had no retry of its
-own, so one flaky read failed a fresh feed's first commit. Needs only the
-`swarm-bee` import (the client object is stubbed; no node)."""
+own, so one flaky read failed a fresh feed's first commit. Needs only
+swarmfs (the feed reads are stubbed; no node)."""
 
 import unittest
 from types import SimpleNamespace
 
 try:
-    import bee as _bee  # noqa: F401
-    _HAVE_SWARM_BEE = True
+    from swarmfs.exceptions import BeeAPIError
+    _HAVE_SWARMFS = True
 except ImportError:
-    _HAVE_SWARM_BEE = False
+    _HAVE_SWARMFS = False
 
 
-class _Refused(Exception):
-    def __init__(self, status):
-        super().__init__(f"HTTP {status}")
-        self.status = status
-
-
-@unittest.skipUnless(_HAVE_SWARM_BEE, "install recordstore[feeds] (swarm-bee)")
+@unittest.skipUnless(_HAVE_SWARMFS, "install recordstore[bee] (swarmfs)")
 class TestProbeRetries(unittest.TestCase):
     def _pointer(self, answers, retries=4):
         from recordstore import SwarmFeedPointer
@@ -28,15 +22,17 @@ class TestProbeRetries(unittest.TestCase):
                              max_lookup_retries=retries, retry_backoff=0, retry_backoff_cap=0)
         calls = []
 
-        def download_soc(owner, identifier):
-            calls.append(identifier)
+        def at_index(owner, topic, index, verify=False):
+            calls.append(index)
             status = answers[min(len(calls), len(answers)) - 1]
             if status == 200:
-                return SimpleNamespace(payload=b"\0" * 8 + b"\x11" * 32)
-            raise _Refused(status)
+                return SimpleNamespace(reference="11" * 32, index=index)
+            if status == 404:
+                raise FileNotFoundError(index)  # what swarmfs raises on a 404
+            raise BeeAPIError(status, "chunks")
 
-        p._BeeResponseError = _Refused
-        p._bee = SimpleNamespace(file=SimpleNamespace(download_soc=download_soc))
+        p._run = lambda fn, *a, **kw: fn(*a, **kw)
+        p._ops = SimpleNamespace(at_index=at_index)
         return p, calls
 
     def test_a_500_is_asked_again_and_a_404_is_the_answer(self):
@@ -52,7 +48,7 @@ class TestProbeRetries(unittest.TestCase):
 
     def test_retries_spent_raises_the_last_500(self):
         p, calls = self._pointer([500], retries=3)
-        with self.assertRaises(_Refused):
+        with self.assertRaises(BeeAPIError):
             p._probe_latest_index()
         self.assertEqual(len(calls), 3)
 

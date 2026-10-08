@@ -137,10 +137,10 @@ and nothing more:
 ```bash
 pip install recordstore
 
-# with the Bee (Swarm) bytes backend's HTTP dependency:
+# with the Bee (Swarm) bytes backend (adds swarmfs, which talks to Bee):
 pip install "recordstore[bee]"
 
-# with the Swarm feed pointer (adds swarm-bee for SOC/secp256k1 signing):
+# with the Swarm feed pointer (adds swarmfs and coincurve for signing):
 pip install "recordstore[feeds]"
 
 # with postage_batch_id="auto" and batch-health reporting (adds swarmfs):
@@ -153,9 +153,12 @@ pip install "recordstore[swarm-only]"
 pip install "recordstore[local-first-swarm]"
 ```
 
-Python ≥ 3.11. The core imports only the standard library; both extra
-dependencies are imported lazily — `requests` only by `BeeBytesStore`
-(`[bee]`), `swarm-bee` only by `SwarmFeedPointer` (`[feeds]`).
+Python ≥ 3.11. The core imports only the standard library. Everything that
+talks to Swarm goes through [swarmfs](https://github.com/petfold/swarmfs),
+imported lazily: `BeeBytesStore` (`[bee]`), `SwarmFeedPointer` (`[feeds]`,
+which adds coincurve, i.e. libsecp256k1, for signing), `local_first_store`
+(`[local-first-swarm]`). Until 0.22 the first two had their own clients
+(`requests`, `swarm-bee`).
 
 ## The pieces
 
@@ -165,7 +168,7 @@ dependencies are imported lazily — `requests` only by `BeeBytesStore`
 | trie (internal) | canonical persistent radix trie mapping keys to value blobs | — |
 | `RecordStore` | staging, `commit()` / `commit(reconcile=True)`, snapshots, sorted `keys()`/`items()`, three-way `merge()`, structural `diff()` | — |
 | `RecordStore` (history) | `history()`, `undo()`, `redo()`, `checkout(root)`, `status()` — where this replica has been, and going back | — |
-| `Pointer` | mutable name for the latest root, and the timeline of the roots it has held | `MemoryPointer`, `FilePointer` (atomic local file + a `.timeline` sibling), `SwarmFeedPointer` (owner-signed Swarm feed, over `swarm-bee`) |
+| `Pointer` | mutable name for the latest root, and the timeline of the roots it has held | `MemoryPointer`, `FilePointer` (atomic local file + a `.timeline` sibling), `SwarmFeedPointer` (owner-signed Swarm feed, over swarmfs) |
 
 | `swarm_store(topic, ...)` | assembles the two Swarm pieces into a store | the one place Swarm is chosen: `BeeBytesStore` blobs **and** a `SwarmFeedPointer` head |
 | `local_first_store(path, api_url)` | disk now, Swarm in the background | swarmfs `LocalStore` + journal (the reflog) + background push/confirm; `sync()`, `sync_status()`, `pin`/`fetch`, `publish(pointer)`, `squash_history()` (`[local-first-swarm]` extra, swarmfs ≥ 0.9) |
@@ -197,7 +200,7 @@ python3 -m pytest tests/                                 # unit + fuzz + boundar
 BEE_API=http://<node>:1633 BEE_BATCH=<batchID> \
     python3 -m pytest tests/test_recordstore_bee.py -v   # bytes backend, live node
 
-pip install "recordstore[feeds]"                         # needs swarm-bee
+pip install "recordstore[feeds]"                         # swarmfs + coincurve
 BEE_API=http://<node>:1633 BEE_BATCH=<batchID> \
     python3 -m pytest tests/test_recordstore_feed.py -v  # feed pointer, live node
 ```
@@ -205,7 +208,7 @@ BEE_API=http://<node>:1633 BEE_BATCH=<batchID> \
 The fuzz suite runs randomized put/delete histories against a plain-dict
 oracle and asserts the canonical-root property throughout. The Bee
 integration tests skip automatically unless `BEE_API` is set (the feed test
-also needs `swarm-bee` installed); against a real (non-dev) node always
+also needs the `feeds` extra); against a real (non-dev) node always
 provide `BEE_BATCH` with a purchased postage batch id.
 
 ## Background
@@ -232,13 +235,13 @@ loopmarket's register sequence, R5). Extracted from
 preserved; validated against a live Bee 2.8.2 light node on Gnosis mainnet
 (roundtrips, canonical roots on real BMT references, network retrievability,
 and since 0.21.0 three roots published on a feed and their signed sequence
-verified offline) — CI collects **190 tests** offline (the live-node tests
+verified offline) — CI collects **191 tests** offline (the live-node tests
 skip there; `tests/test_local_first.py`'s 18 more need `swarmfs`), and with
-`BEE_API` set and every extra installed the whole suite of 208, live tests
-included, is **207 passed / 1 skipped** (the count check only CI enforces).
+`BEE_API` set and every extra installed the whole suite of 209, live tests
+included, is **208 passed / 1 skipped** (the count check only CI enforces).
 
-Landmarks: `SwarmFeedPointer` (owner-signed Swarm feed, over `swarm-bee`) in
-v0.4.0; three-way `merge` in v0.8.0; auto-reconciling `commit(reconcile=True)` in
+Landmarks: `SwarmFeedPointer` (owner-signed Swarm feed; over swarm-bee until
+0.22, over swarmfs since) in v0.4.0; three-way `merge` in v0.8.0; auto-reconciling `commit(reconcile=True)` in
 v0.9.0; a best-effort feed `compare_and_set` (cross-process reconcile) in
 v0.10.0; `prove`/`verify_proof` in v0.16.0; local-first stores in v0.17.0; and
 **undo/redo/`history()`/`checkout()` in v0.20.0** — the version timeline a

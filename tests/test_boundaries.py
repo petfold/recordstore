@@ -2,7 +2,7 @@
 
 recordstore is a generic record store: its module-level imports must stay
 stdlib-only. Third-party imports are allowed only lazily inside functions
-(BeeBytesStore imports `requests` this way). This keeps `import recordstore`
+(BeeBytesStore and SwarmFeedPointer import swarmfs this way). This keeps `import recordstore`
 dependency-free for consumers that only use the in-memory backends.
 
 (Ported from the OntoDAG repo's B2 boundary check when the package was

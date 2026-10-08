@@ -23,17 +23,21 @@ BEE_API = os.environ.get("BEE_API")
 class TestAgainstLiveBee(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
-        import requests
+        import json
+        import urllib.request
         cls.batch = os.environ.get("BEE_BATCH")
         if not cls.batch:
-            r = requests.post(f"{BEE_API}/stamps/100000000/20", timeout=60)
-            r.raise_for_status()
-            cls.batch = r.json()["batchID"]
+            req = urllib.request.Request(f"{BEE_API}/stamps/100000000/20", method="POST")
+            with urllib.request.urlopen(req, timeout=60) as r:
+                cls.batch = json.load(r)["batchID"]
             deadline = time.time() + 120
             while time.time() < deadline:  # wait until the batch is usable
-                s = requests.get(f"{BEE_API}/stamps/{cls.batch}", timeout=30)
-                if s.ok and s.json().get("usable"):
-                    break
+                try:
+                    with urllib.request.urlopen(f"{BEE_API}/stamps/{cls.batch}", timeout=30) as s:
+                        if json.load(s).get("usable"):
+                            break
+                except OSError:
+                    pass
                 time.sleep(2)
             else:
                 raise RuntimeError("postage batch never became usable")

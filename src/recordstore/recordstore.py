@@ -361,7 +361,7 @@ WARN_BUCKET_RATIO = 0.8
 
 
 def _stamp_manager(api_url: str, min_ttl: int):
-    """``(client, StampManager)`` from swarmfs, imported lazily like requests."""
+    """``(client, StampManager)`` from swarmfs, imported lazily."""
     try:
         from swarmfs._client import SwarmClient
         from swarmfs.stamps import StampManager
@@ -438,7 +438,7 @@ def _warn_about(info) -> None:
 
 def _auto_batch(api_url: str, min_ttl: int = AUTO_MIN_BATCH_TTL) -> str:
     """Resolve 'auto' to a validated usable batch id via swarmfs's
-    StampManager (an optional dependency, imported lazily like requests).
+    StampManager (an optional dependency, imported lazily).
 
     Rejects batches with less than ``min_ttl`` seconds left, and warns when
     the one it picks is close to expiry or to a full bucket — a record store
@@ -473,12 +473,23 @@ class BeeBytesStore:
     usable postage batch id for writes; ``"auto"`` picks one via swarmfs
     (validated, longest TTL — see ``_auto_batch``; selection only, buying
     is deliberately left to the caller).
+
+    The HTTP side is swarmfs's client (since 0.22; it was `requests`), so
+    recordstore reaches Bee one way: `get_many`/`put_many` keep
+    `max_concurrent_reads` requests in flight on swarmfs's event loop over
+    one pooled keep-alive session.
     """
 
     def __init__(self, api_url: str, postage_batch_id: str = "auto",
                  deferred_upload: bool = True, max_concurrent_reads: int = 32,
                  min_batch_ttl: int = AUTO_MIN_BATCH_TTL):
-        import requests  # lazy: only needed for the real backend
+        try:  # lazy: only needed for the real backend
+            from fsspec.asyn import sync
+            from swarmfs import SwarmClient, SyncSwarmClient
+        except ImportError as e:  # pragma: no cover - only without the extra
+            raise ImportError(
+                "BeeBytesStore talks to Bee through swarmfs; install it with: "
+                'pip install "recordstore[bee]"') from e
         self.api_url = api_url.rstrip("/")
         if postage_batch_id in (None, "auto"):
             postage_batch_id = _auto_batch(self.api_url, min_batch_ttl)
@@ -490,15 +501,9 @@ class BeeBytesStore:
         # beyond. The best number depends on the node, so it stays a knob
         # (User Guide, "Concurrency tuning across a real link").
         self.max_concurrent_reads = max(1, max_concurrent_reads)
-        # A persistent session with a connection pool: keep-alive avoids a fresh
-        # TCP (and TLS) handshake on every blob op — the dominant per-op cost on
-        # a high-latency link — and gives the read pool reusable connections.
-        self._session = requests.Session()
-        adapter = requests.adapters.HTTPAdapter(
-            pool_connections=1, pool_maxsize=self.max_concurrent_reads
-        )
-        self._session.mount("http://", adapter)
-        self._session.mount("https://", adapter)
+        self._async = SwarmClient(self.api_url)
+        self._client = SyncSwarmClient(client=self._async)
+        self._run = lambda fn, *a: sync(self._client.loop, fn, *a)
 
     def batch_status(self, *, buckets: bool = False):
         """This store's postage batch health — ``(StampInfo, BucketStats |
@@ -506,41 +511,50 @@ class BeeBytesStore:
         renewal is still possible; see :func:`batch_status`."""
         return batch_status(self.api_url, self.batch, buckets=buckets)
 
+    def _refused(self, e: Exception) -> RuntimeError:
+        """A 402 means one of two very different things, and only one is
+        recoverable, so say which. Nothing already stored is lost either
+        way."""
+        if "overissued" in str(e) or "full in at least one bucket" in str(e):
+            return RuntimeError(
+                f"postage batch {self.batch[:8]}… refused this chunk: a "
+                "bucket is full. Nothing already stored is lost. Dilute the "
+                "batch one depth to double every bucket's capacity and retry "
+                "(swarmfs: StampManager.dilute, or 'swarmlite stamps dilute "
+                "<id> --depth N'), then top up — dilution halves the "
+                "remaining validity.")
+        return RuntimeError(
+            f"the node did not accept postage batch {self.batch[:8]}… "
+            f"Check it with GET /stamps/{self.batch}; if it expired, a new "
+            "batch is the only option — expired batches cannot be revived.")
+
     def put(self, data: bytes) -> Ref:
-        r = self._session.post(
-            f"{self.api_url}/bytes",
-            data=data,
-            headers={
-                "Content-Type": "application/octet-stream",
-                "Swarm-Postage-Batch-Id": self.batch,
-                "Swarm-Deferred-Upload": "true" if self.deferred else "false",
-            },
-            timeout=120,
-        )
-        if r.status_code == 402:
-            # This store owns its transport, so it does not inherit swarmfs's
-            # 402 handling. The two 402s mean different things and only one is
-            # recoverable, so say which: "overissued" is a full bucket, not a
-            # dead stamp, and nothing already stored is lost.
-            detail = r.text[:200]
-            if "overissued" in detail:
-                raise RuntimeError(
-                    f"postage batch {self.batch[:8]}… refused this chunk: a "
-                    f"bucket is full ({detail}). Nothing already stored is "
-                    "lost. Dilute the batch one depth to double every "
-                    "bucket's capacity and retry (swarmfs: "
-                    "StampManager.dilute, or 'swarmlite stamps dilute <id> "
-                    "--depth N'), then top up — dilution halves the "
-                    "remaining validity."
-                )
-            raise RuntimeError(
-                f"the node did not accept postage batch {self.batch[:8]}… "
-                f"({detail}). Check it with GET /stamps/{self.batch}; if it "
-                "expired, a new batch is the only option — expired batches "
-                "cannot be revived."
-            )
-        r.raise_for_status()
-        return r.json()["reference"]
+        from swarmfs.exceptions import StampError
+        try:
+            return self._client.bytes_post(data, self.batch,
+                                           deferred=self.deferred)
+        except StampError as e:
+            raise self._refused(e) from e
+
+    def get(self, ref: Ref) -> bytes:
+        try:
+            return self._client.bytes_get(ref)
+        except FileNotFoundError:
+            raise KeyError(f"reference not found: {ref}") from None
+
+    async def _many(self, fn, items: list) -> list:
+        import asyncio
+        gate = asyncio.Semaphore(self.max_concurrent_reads)
+
+        async def one(item):
+            async with gate:
+                return await fn(item)
+        results = await asyncio.gather(*(one(i) for i in items),
+                                       return_exceptions=True)
+        for r in results:
+            if isinstance(r, BaseException):
+                raise r
+        return results
 
     def get_many(self, refs: Iterable[Ref]) -> Dict[Ref, bytes]:
         """Fetch many references concurrently — the fast path for hydrating a
@@ -551,26 +565,27 @@ class BeeBytesStore:
         refs = list(refs)
         if not refs:
             return {}
-        workers = min(self.max_concurrent_reads, len(refs))
-        with ThreadPoolExecutor(max_workers=workers) as pool:
-            return dict(zip(refs, pool.map(self.get, refs)))
+        try:
+            got = self._run(self._many, self._async.bytes_get, refs)
+        except FileNotFoundError as e:
+            raise KeyError(f"reference not found: {e}") from None
+        return dict(zip(refs, got))
 
     def put_many(self, datas: Iterable[bytes]) -> List[Ref]:
         """Upload independent blobs concurrently, preserving order. Used for a
         commit's value blobs, which have no dependencies on one another."""
+        from swarmfs.exceptions import StampError
         datas = list(datas)
         if not datas:
             return []
-        workers = min(self.max_concurrent_reads, len(datas))
-        with ThreadPoolExecutor(max_workers=workers) as pool:
-            return list(pool.map(self.put, datas))
 
-    def get(self, ref: Ref) -> bytes:
-        r = self._session.get(f"{self.api_url}/bytes/{ref}", timeout=120)
-        if r.status_code == 404:
-            raise KeyError(f"reference not found: {ref}")
-        r.raise_for_status()
-        return r.content
+        async def post(data):
+            return await self._async.bytes_post(data, self.batch,
+                                                deferred=self.deferred)
+        try:
+            return self._run(self._many, post, datas)
+        except StampError as e:
+            raise self._refused(e) from e
 
 
 class CachedBytesStore:
@@ -1626,10 +1641,12 @@ class SwarmFeedPointer:
     protocol: ``set(root)`` publishes a new signed update, ``get()`` resolves
     the latest root.
 
-    Requires the ``swarm-bee`` package (``pip install "recordstore[feeds]"``),
-    which performs the SOC/secp256k1 signing correctly — independently verified
-    against a live Bee 2.8.1 node (2026-07). It is imported lazily, so the
-    recordstore core stays stdlib-only.
+    Requires swarmfs >= 0.13 with coincurve (``pip install
+    "recordstore[feeds]"``): swarmfs talks to Bee and signs through
+    ``swarmfs.signer`` (libsecp256k1); a read-only pointer needs no coincurve.
+    Imported lazily, so the recordstore core stays stdlib-only. Until 0.22
+    this ran on the ``swarm-bee`` package; feeds written either way read the
+    same (same topic hashing, identifiers, signatures and payload).
 
     Reliability. Swarm feed *lookups* are unreliable per call on a light node,
     especially over a high-latency link: a lookup can 404 ("lookup failed";
@@ -1661,11 +1678,10 @@ class SwarmFeedPointer:
     at least once, ``get()`` also passes Bee's ``after`` index hint
     (``GET /feeds/...?after=N``) so the lookup resumes just below the last
     confirmed index instead of probing from scratch — much cheaper and less
-    flaky as the feed grows. swarm-bee's typed API does not expose ``after``
-    (see bee-py#2), so it is sent through the client transport directly, and
-    falls back to the plain lookup when that transport is unavailable or when
-    there is no confirmed index yet to resume from. This is a Swarm/light-node
-    characteristic, not a swarm-bee defect — any client hits it identically.
+    flaky as the feed grows; with no confirmed index yet to resume from it
+    probes. This is a Swarm/light-node characteristic, not a client defect —
+    any client hits it identically. Every chunk read is verified: the owner's
+    signature must recover to ``owner`` at the chunk's address.
 
     Construction. Pass a ``signer`` (32-byte secp256k1 private key, hex) to read
     *and* write; the owner address is derived from it. For a read-only pointer,
@@ -1688,39 +1704,42 @@ class SwarmFeedPointer:
         retry_backoff_cap: float = 5.0,
     ):
         try:
-            from bee import Bee
-            from bee.feeds import make_feed_identifier
-            from bee.swarm.keys import PrivateKey
-            from bee.swarm.typed_bytes import BatchId, EthAddress, Reference, Topic
-            from bee.swarm.errors import BeeResponseError
+            from fsspec.asyn import sync
+            from swarmfs import SwarmClient, SyncSwarmClient
+            from swarmfs.bmt import keccak256
+            from swarmfs.exceptions import BeeAPIError
+            from swarmfs.feeds import FeedOps, FeedSigner, owner_bytes
         except ImportError as e:  # pragma: no cover - only without the extra
             raise ImportError(
-                "SwarmFeedPointer requires the 'swarm-bee' package; install it "
-                'with: pip install "recordstore[feeds]"'
+                "SwarmFeedPointer requires swarmfs >= 0.13; install it with: "
+                'pip install "recordstore[feeds]"'
             ) from e
 
-        self._Reference = Reference
-        self._make_feed_identifier = make_feed_identifier
-        self._BeeResponseError = BeeResponseError
-        self._bee = Bee(api_url)
-        self._topic = Topic.from_string(topic)
+        self._BeeAPIError = BeeAPIError
+        client = SwarmClient(api_url)
+        self._client = SyncSwarmClient(client=client)
+        self._ops = FeedOps(client)
+        self._run = lambda fn, *a, **kw: sync(self._client.loop, fn, *a, **kw)
+        # A topic name is keccak256 of its UTF-8, as bee-js' Topic.fromString
+        # and swarm-bee hash it — always, even for a 64-hex name.
+        self._topic = keccak256(topic.encode("utf-8"))
 
-        self._signer = PrivateKey.from_hex(signer) if signer else None
+        self._signer = FeedSigner(signer) if signer else None
         if self._signer is not None:
-            self._owner = self._signer.public_key().address()
+            self._owner = self._signer.owner
         elif owner is not None:
-            self._owner = EthAddress.from_hex(owner)
+            self._owner = owner_bytes(owner)
         else:
             raise ValueError(
                 "SwarmFeedPointer needs a signer (to read and write) or an "
                 "owner address (read-only)"
             )
-        self._batch = BatchId.from_hex(postage_batch_id) if postage_batch_id else None
-
-        # Bee honours GET /feeds/...?after=N (resume a lookup from a known
-        # index); swarm-bee's typed API can't pass it, so hint via the client
-        # transport when present (bee-py#2), falling back cleanly otherwise.
-        self._can_hint = hasattr(getattr(self._bee.feeds, "_inner", None), "send")
+        if postage_batch_id is not None:
+            batch = postage_batch_id.lower().removeprefix("0x")
+            if len(batch) != 64 or any(c not in "0123456789abcdef" for c in batch):
+                raise ValueError(f"{postage_batch_id!r} is not a postage batch id")
+            postage_batch_id = batch
+        self._batch = postage_batch_id
 
         self._ttl = feed_ttl
         self._max_retries = max(1, max_lookup_retries)
@@ -1731,6 +1750,22 @@ class SwarmFeedPointer:
         self._cached_ref: Optional[Ref] = None
         self._next_index = 0
         self._cache_expiry = 0.0
+
+    @property
+    def owner(self) -> str:
+        """The feed owner's 20-byte address, hex (no ``0x``)."""
+        return self._owner.hex()
+
+    @property
+    def topic(self) -> str:
+        """The 32-byte feed topic, hex."""
+        return self._topic.hex()
+
+    def _transient(self, e: Exception) -> bool:
+        """404s and 500s from a lookup or chunk read are worth asking again:
+        a light node answers both for the same chunk moments apart."""
+        return isinstance(e, FileNotFoundError) or (
+            isinstance(e, self._BeeAPIError) and e.status in (404, 500))
 
     def set(self, root: Ref) -> None:
         if self._signer is None or self._batch is None:
@@ -1747,13 +1782,8 @@ class SwarmFeedPointer:
         else:
             probed = self._probe_latest_index()
             index = probed + 1 if probed is not None else 0
-        self._bee.feeds.update_feed_with_reference(
-            batch_id=self._batch,
-            signer=self._signer,
-            topic=self._topic,
-            reference=self._Reference.from_hex(root),
-            index=index,
-        )
+        self._run(self._ops.update, self._signer, self._topic, index, root,
+                  self._batch)
         self._cached_ref = root
         self._next_index = index + 1
         self._cache_expiry = time.monotonic() + self._ttl
@@ -1774,9 +1804,9 @@ class SwarmFeedPointer:
                     # reference from the feed's single-owner chunk — NOT from a
                     # plain feed GET, which Bee dereferences to the pointed-to
                     # content rather than returning the reference.
-                    identifier = self._make_feed_identifier(self._topic, latest_index)
-                    soc = self._bee.file.download_soc(self._owner, identifier)
-                    self._cached_ref = self._soc_reference(soc)
+                    upd = self._run(self._ops.at_index, self._owner,
+                                    self._topic, latest_index, verify=True)
+                    self._cached_ref = upd.reference
                     self._next_index = index_next
                     self._cache_expiry = time.monotonic() + self._ttl
                     return self._cached_ref
@@ -1785,8 +1815,8 @@ class SwarmFeedPointer:
                     self._cache_expiry = time.monotonic() + self._ttl
                     return self._cached_ref
                 # index_next < floor: stale-early lookup; retry for a fresher one.
-            except self._BeeResponseError as e:
-                if getattr(e, "status", None) not in (404, 500):
+            except (FileNotFoundError, self._BeeAPIError) as e:
+                if not self._transient(e):
                     raise
                 # transient flake or empty feed; fall through to backoff/retry.
             if attempt < self._max_retries - 1:
@@ -1826,24 +1856,19 @@ class SwarmFeedPointer:
         ``after`` hint — one round trip when it works. Cold path, or when the
         hinted lookup flakes: probe the feed's SOC chunks directly, which are
         individually retrievable even when the /feeds lookup does not resolve.
-        Raises ``BeeResponseError`` only on transient chunk-fetch errors, which
-        the retry loop in ``get`` absorbs."""
+        Raises only on transient chunk-fetch errors, which the retry loop in
+        ``get`` absorbs."""
         hint = self._next_index - 2  # one below our last-confirmed index
-        if self._can_hint and hint >= 1:
+        if hint >= 1:
             try:
-                resp = self._bee.feeds._inner.send(
-                    "GET",
-                    f"feeds/{self._owner.to_hex()}/{self._topic.to_hex()}",
-                    params={"after": str(hint)},
-                    headers=[("Swarm-Only-Root-Chunk", "true")],
-                )
-                idx_hex = resp.headers.get("swarm-feed-index")
-                if idx_hex is not None:
-                    return int(idx_hex, 16)
-            except self._BeeResponseError as e:
-                if getattr(e, "status", None) not in (404, 500):
+                head = self._client.feed_head(self._owner.hex(),
+                                              self._topic.hex(), after=hint)
+                if head is not None:
+                    return int(head[0], 16)
+            except (FileNotFoundError, self._BeeAPIError) as e:
+                if not self._transient(e):
                     raise
-                # hinted lookup flaked; fall through to the reliable probe.
+            # hinted lookup flaked; fall through to the reliable probe.
         return self._probe_latest_index()
 
     def _probe_latest_index(self) -> Optional[int]:
@@ -1873,17 +1898,19 @@ class SwarmFeedPointer:
         spent. Before 0.20.3 the probe raised at the first 500 and `set`,
         which probes cold, had no retry of its own: a first commit to a fresh
         feed failed on one flaky read (loopmarket's live gate, 2026-09-18)."""
-        identifier = self._make_feed_identifier(self._topic, index)
         delay = self._backoff
         for attempt in range(self._max_retries):
             try:
-                self._bee.file.download_soc(self._owner, identifier)
+                self._run(self._ops.at_index, self._owner, self._topic, index,
+                          verify=True)
                 return True
-            except self._BeeResponseError as e:
-                if getattr(e, "status", None) == 404:
+            except FileNotFoundError:
+                return False
+            except self._BeeAPIError as e:
+                if e.status == 404:
                     return False
-                if attempt == self._max_retries - 1:
-                    raise  # transient for too long: the caller hears it
+                if e.status != 500 or attempt == self._max_retries - 1:
+                    raise  # not transient, or transient for too long
             time.sleep(delay)
             delay = min(delay * 2, self._backoff_cap)
         return False  # pragma: no cover - the loop returns or raises
@@ -1895,12 +1922,11 @@ class SwarmFeedPointer:
         root — beside the owner, topic and index it claims to be. Anyone
         checks it with `verify_feed_update`, with no node. Raises the node's
         response error for an index the feed does not hold (404)."""
-        from bee.swarm.soc import calculate_single_owner_chunk_address
-        identifier = self._make_feed_identifier(self._topic, index)
-        address = calculate_single_owner_chunk_address(identifier, self._owner)
-        wire = self._bee.file.download_chunk(address)
-        return {"format": FEED_UPDATE_FORMAT, "version": 1, "owner": self._owner.as_bytes().hex(),
-                "topic": self._topic.as_bytes().hex(), "index": int(index), "soc": bytes(wire).hex()}
+        from swarmfs.feeds import feed_identifier, soc_address
+        address = soc_address(feed_identifier(self._topic, index), self._owner)
+        wire = self._client.chunk_get(address.hex())
+        return {"format": FEED_UPDATE_FORMAT, "version": 1, "owner": self._owner.hex(),
+                "topic": self._topic.hex(), "index": int(index), "soc": bytes(wire).hex()}
 
     def updates(self, start: int = 0, stop: Optional[int] = None) -> List[dict]:
         """The feed's updates from `start` up to `stop` (default: past the tip,
@@ -1911,13 +1937,6 @@ class SwarmFeedPointer:
             tip = self._probe_latest_index()
             stop = tip + 1 if tip is not None else 0
         return [self.update(i) for i in range(start, stop)]
-
-    @staticmethod
-    def _soc_reference(soc) -> Ref:
-        # SOC payload is timestamp(8 BE) || reference; strip the timestamp.
-        payload = soc.payload
-        payload = payload.as_bytes() if hasattr(payload, "as_bytes") else bytes(payload)
-        return payload[8:].hex()
 
 
 # ---------------------------------------------------------------------------
@@ -1933,8 +1952,8 @@ class SwarmFeedPointer:
 # one index are a self-contained proof of equivocation. What a feed cannot
 # prove is time: its timestamp is the writer's own claim, binding on the
 # writer, not a clock; "no newer root existed at t" needs a trusted anchor.
-# Format "recordstore-feed-update", version 1. Needs the `bee` package (the
-# `feeds` extra) to verify, loaded lazily.
+# Format "recordstore-feed-update", version 1. Verifying needs swarmfs (no
+# coincurve: signature recovery falls back to pure Python), loaded lazily.
 # ---------------------------------------------------------------------------
 
 FEED_UPDATE_FORMAT = "recordstore-feed-update"
@@ -1960,8 +1979,8 @@ def _hex_topic(topic: str) -> str:
     h = topic[2:] if topic.startswith("0x") else topic
     if len(h) == 64 and all(c in "0123456789abcdefABCDEF" for c in h):
         return h.lower()
-    from bee.swarm.typed_bytes import Topic
-    return Topic.from_string(topic).as_bytes().hex()
+    from swarmfs.bmt import keccak256
+    return keccak256(topic.encode("utf-8")).hex()
 
 
 def verify_feed_update(update, owner: str, topic: str) -> FeedUpdate:
@@ -1970,11 +1989,10 @@ def verify_feed_update(update, owner: str, topic: str) -> FeedUpdate:
     the index it claims, and return what it publishes. Raises
     ``ProofError`` on any mismatch. Pure: no node, only the chunk's bytes."""
     try:
-        from bee.feeds import make_feed_identifier
-        from bee.swarm.soc import calculate_single_owner_chunk_address, unmarshal_single_owner_chunk
-        from bee.swarm.typed_bytes import EthAddress, Topic
+        from swarmfs.feeds import SOC_PAYLOAD_OFFSET, feed_identifier, soc_address, verify_soc
+        from swarmfs.join import VerificationError
     except ImportError as e:  # pragma: no cover - only without the extra
-        raise ImportError('verifying feed updates requires the \'swarm-bee\' package; '
+        raise ImportError('verifying feed updates requires swarmfs >= 0.13; '
                           'install it with: pip install "recordstore[feeds]"') from e
     if not isinstance(update, dict) or update.get("format") != FEED_UPDATE_FORMAT:
         raise ProofError(f"not a {FEED_UPDATE_FORMAT} envelope")
@@ -1986,13 +2004,14 @@ def verify_feed_update(update, owner: str, topic: str) -> FeedUpdate:
     index = update.get("index")
     if not isinstance(index, int) or isinstance(index, bool) or not 0 <= index < (1 << 64):
         raise ProofError("the update names no index")
-    identifier = make_feed_identifier(Topic(bytes.fromhex(topic_hex)), index)
-    address = calculate_single_owner_chunk_address(identifier, EthAddress(bytes.fromhex(owner_hex)))
+    owner_b = bytes.fromhex(owner_hex)
+    address = soc_address(feed_identifier(bytes.fromhex(topic_hex), index), owner_b)
     try:
-        soc = unmarshal_single_owner_chunk(bytes.fromhex(update.get("soc", "")), address)
-    except Exception:
+        wire = bytes.fromhex(update.get("soc", ""))
+        verify_soc(wire, owner_b, address)
+    except (ValueError, VerificationError):
         raise ProofError("the chunk is not the owner's signed update at this index") from None
-    payload = soc.payload.as_bytes() if hasattr(soc.payload, "as_bytes") else bytes(soc.payload)
+    payload = wire[SOC_PAYLOAD_OFFSET:]
     if len(payload) not in (8 + 32, 8 + 64):
         raise ProofError("the update's payload is not a timestamp and a root")
     return FeedUpdate(index, payload[8:].hex(), int.from_bytes(payload[:8], "big"))

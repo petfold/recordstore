@@ -10,19 +10,22 @@ updates, verify_feed_update, verify_equivocation).
   F4  The pointer reads one update, or the sequence up to the tip, as
       envelopes (the node is stubbed).
 
-Chunks are built with swarm-bee's own signing — the code the pointer
-writes with, verified against a live Bee — so they are exactly what a feed
-publishes. Needs the `swarm-bee` import only."""
+Chunks are built with swarmfs's signer — the code the pointer writes
+with since 0.22, verified against a live Bee — so they are exactly what a
+feed publishes; one test checks they are byte-identical to the chunks
+swarm-bee (the pointer's library before 0.22) builds, when it is
+installed. Needs swarmfs with coincurve (to sign the fixtures)."""
 
 import json
 import unittest
 from types import SimpleNamespace
 
 try:
-    import bee as _bee  # noqa: F401
-    _HAVE_SWARM_BEE = True
+    import coincurve  # noqa: F401  (to sign the fixtures)
+    import swarmfs  # noqa: F401
+    _HAVE_SIGNER = True
 except ImportError:
-    _HAVE_SWARM_BEE = False
+    _HAVE_SIGNER = False
 
 KEY = "11" * 32
 OTHER_KEY = "22" * 32
@@ -32,25 +35,25 @@ ROOT_A, ROOT_B = "aa" * 32, "bb" * 32
 
 def _signed(index, root, *, key=KEY, topic=TOPIC, timestamp=1_790_000_000):
     """The feed update chunk `set` would publish, as an envelope."""
-    from bee.feeds import make_feed_identifier
-    from bee.swarm.keys import PrivateKey
-    from bee.swarm.soc import make_single_owner_chunk
-    from bee.swarm.typed_bytes import Topic
     from recordstore import FEED_UPDATE_FORMAT
-    signer = PrivateKey.from_hex(key)
-    t = Topic.from_string(topic)
-    soc = make_single_owner_chunk(make_feed_identifier(t, index),
-                                  timestamp.to_bytes(8, "big") + bytes.fromhex(root), signer)
-    return {"format": FEED_UPDATE_FORMAT, "version": 1, "owner": signer.public_key().address().as_bytes().hex(),
-            "topic": t.as_bytes().hex(), "index": index, "soc": soc.data().hex()}
+    from swarmfs.bmt import cac_data, chunk_address, keccak256
+    from swarmfs.feeds import feed_identifier
+    from swarmfs.signer import Signer
+    signer = Signer(key)
+    t = keccak256(topic.encode())
+    identifier = feed_identifier(t, index)
+    cac = cac_data(timestamp.to_bytes(8, "big") + bytes.fromhex(root))
+    soc = identifier + signer.sign(identifier + chunk_address(cac)) + cac
+    return {"format": FEED_UPDATE_FORMAT, "version": 1, "owner": signer.address_hex,
+            "topic": t.hex(), "index": index, "soc": soc.hex()}
 
 
 def _owner(key=KEY):
-    from bee.swarm.keys import PrivateKey
-    return "0x" + PrivateKey.from_hex(key).public_key().address().as_bytes().hex()
+    from swarmfs.signer import Signer
+    return "0x" + Signer(key).address_hex
 
 
-@unittest.skipUnless(_HAVE_SWARM_BEE, "install recordstore[feeds] (swarm-bee)")
+@unittest.skipUnless(_HAVE_SIGNER, "install recordstore[feeds] (swarmfs + coincurve)")
 class TestVerify(unittest.TestCase):
     def test_an_update_verifies_offline_to_its_index_root_and_timestamp(self):
         from recordstore import FeedUpdate, verify_feed_update
@@ -87,18 +90,18 @@ class TestVerify(unittest.TestCase):
             verify_equivocation(_signed(5, ROOT_A), _signed(5, ROOT_B, key=OTHER_KEY), _owner(), TOPIC)
 
 
-@unittest.skipUnless(_HAVE_SWARM_BEE, "install recordstore[feeds] (swarm-bee)")
+@unittest.skipUnless(_HAVE_SIGNER, "install recordstore[feeds] (swarmfs + coincurve)")
 class TestPointer(unittest.TestCase):
     def _pointer(self, roots):
-        from bee.swarm.soc import calculate_single_owner_chunk_address
         from recordstore import SwarmFeedPointer
+        from swarmfs.feeds import feed_identifier, soc_address
         p = SwarmFeedPointer("http://127.0.0.1:1", TOPIC, owner=_owner())
         chunks = {}
         for i, root in enumerate(roots):
             env = _signed(i, root)
-            address = calculate_single_owner_chunk_address(p._make_feed_identifier(p._topic, i), p._owner)
-            chunks[address.as_bytes()] = bytes.fromhex(env["soc"])
-        p._bee = SimpleNamespace(file=SimpleNamespace(download_chunk=lambda a: chunks[a.as_bytes()]))
+            address = soc_address(feed_identifier(bytes.fromhex(p.topic), i), bytes.fromhex(p.owner))
+            chunks[address.hex()] = bytes.fromhex(env["soc"])
+        p._client = SimpleNamespace(chunk_get=lambda a: chunks[a])
         p._probe_latest_index = lambda: len(roots) - 1 if roots else None
         return p
 
@@ -111,6 +114,29 @@ class TestPointer(unittest.TestCase):
         self.assertEqual([(s.index, s.root) for s in seq], [(0, ROOT_A), (1, ROOT_B), (2, "cc" * 32)])
         self.assertEqual(len(p.updates(1, 2)), 1)
         self.assertEqual(self._pointer([]).updates(), [])
+
+
+class TestSameChunksAsSwarmBee(unittest.TestCase):
+    """Feeds published before 0.22 were signed by swarm-bee: the chunks the
+    pointer writes now are byte-identical, so old and new envelopes verify
+    alike and either reader follows the other's feed."""
+
+    def test_byte_identical_to_swarm_bee(self):
+        try:
+            from bee.feeds import make_feed_identifier
+            from bee.swarm.keys import PrivateKey
+            from bee.swarm.soc import make_single_owner_chunk
+            from bee.swarm.typed_bytes import Topic
+        except ImportError:
+            self.skipTest("swarm-bee not installed (only needed for this comparison)")
+        if not _HAVE_SIGNER:
+            self.skipTest("swarmfs + coincurve needed")
+        for index, root, key in ((0, ROOT_A, KEY), (7, ROOT_B, OTHER_KEY)):
+            old = make_single_owner_chunk(
+                make_feed_identifier(Topic.from_string(TOPIC), index),
+                (1_790_000_000).to_bytes(8, "big") + bytes.fromhex(root),
+                PrivateKey.from_hex(key)).data()
+            self.assertEqual(_signed(index, root, key=key)["soc"], bytes(old).hex())
 
 
 if __name__ == "__main__":

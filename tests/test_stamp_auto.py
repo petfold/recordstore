@@ -68,14 +68,14 @@ def _fake_swarmfs(info=None, buckets=None, legacy=False, record=None):
 
 
 try:
-    import requests  # noqa: F401 — BeeBytesStore's own lazy dependency
-    HAVE_REQUESTS = True
+    import swarmfs  # noqa: F401 — BeeBytesStore talks to Bee through it
+    HAVE_SWARMFS = True
 except ImportError:  # pragma: no cover
-    HAVE_REQUESTS = False
+    HAVE_SWARMFS = False
 
 
 class TestAutoStamp(unittest.TestCase):
-    @unittest.skipUnless(HAVE_REQUESTS, "requests not installed")
+    @unittest.skipUnless(HAVE_SWARMFS, "swarmfs not installed")
     def test_explicit_batch_id_bypasses_selection(self):
         from recordstore.recordstore import BeeBytesStore
 
@@ -86,7 +86,7 @@ class TestAutoStamp(unittest.TestCase):
             store = BeeBytesStore("http://x:1633", "ab" * 32)
         self.assertEqual(store.batch, "ab" * 32)
 
-    @unittest.skipUnless(HAVE_REQUESTS, "requests not installed")
+    @unittest.skipUnless(HAVE_SWARMFS, "swarmfs not installed")
     def test_auto_resolves_via_helper(self):
         from recordstore.recordstore import BeeBytesStore
 
@@ -178,18 +178,21 @@ class TestAutoStamp(unittest.TestCase):
 
 class TestWriteRefusal(unittest.TestCase):
     """A 402 on write means one of two very different things, and only one
-    of them is recoverable. BeeBytesStore owns its transport, so it must
-    say which itself — it does not inherit swarmfs's 402 handling."""
+    of them is recoverable. swarmfs carries the request; BeeBytesStore keeps
+    its own wording for which 402 it was and what to do."""
 
     def _store(self, status, text):
         from recordstore.recordstore import BeeBytesStore
+        from swarmfs.exceptions import StampError
 
         store = BeeBytesStore("http://x:1633", "ab" * 32)
-        resp = types.SimpleNamespace(status_code=status, text=text)
-        store._session = types.SimpleNamespace(post=lambda *a, **k: resp)
+
+        def refuse(*a, **k):
+            raise StampError(f"Bee API {status} for /bytes: {text}")
+        store._client = types.SimpleNamespace(bytes_post=refuse)
         return store
 
-    @unittest.skipUnless(HAVE_REQUESTS, "requests not installed")
+    @unittest.skipUnless(HAVE_SWARMFS, "swarmfs not installed")
     def test_full_bucket_says_dilute_and_that_nothing_is_lost(self):
         store = self._store(402, '{"code":402,"message":"batch is overissued"}')
         with self.assertRaises(RuntimeError) as ctx:
@@ -200,7 +203,7 @@ class TestWriteRefusal(unittest.TestCase):
         self.assertIn("Dilute", msg)
         self.assertIn("top up", msg)
 
-    @unittest.skipUnless(HAVE_REQUESTS, "requests not installed")
+    @unittest.skipUnless(HAVE_SWARMFS, "swarmfs not installed")
     def test_other_402_points_at_the_batch_and_expiry(self):
         store = self._store(402, '{"code":402,"message":"batch not usable"}')
         with self.assertRaises(RuntimeError) as ctx:

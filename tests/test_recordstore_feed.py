@@ -1,6 +1,6 @@
-"""Integration test: SwarmFeedPointer against a live Bee node + swarm-bee.
+"""Integration test: SwarmFeedPointer against a live Bee node.
 
-Requires both a running Bee node and the `swarm-bee` package:
+Requires a running Bee node and swarmfs with coincurve (the `feeds` extra):
 
     pip install "recordstore[feeds]"
     bee dev --api-addr=127.0.0.1:1633
@@ -8,7 +8,7 @@ Requires both a running Bee node and the `swarm-bee` package:
 
 A random signer key and a postage batch are created automatically unless
 BEE_FEED_SIGNER / BEE_BATCH are set. Skipped entirely when BEE_API is unset or
-`swarm-bee` is not installed, so it is safe in CI.
+the `feeds` extra is not installed, so it is safe in CI.
 
 Feed lookups are unreliable per call on Swarm (see the SwarmFeedPointer
 docstring); these tests exercise the read-your-writes cache and the
@@ -23,29 +23,34 @@ import unittest
 BEE_API = os.environ.get("BEE_API")
 
 try:
-    import bee as _bee  # noqa: F401  (import-name of the `swarm-bee` package)
-    _HAVE_SWARM_BEE = True
+    import coincurve  # noqa: F401  (feed signing)
+    import swarmfs  # noqa: F401
+    _HAVE_FEEDS = True
 except ImportError:
-    _HAVE_SWARM_BEE = False
+    _HAVE_FEEDS = False
 
 
 @unittest.skipUnless(BEE_API, "set BEE_API to run Bee integration tests")
-@unittest.skipUnless(_HAVE_SWARM_BEE, "install recordstore[feeds] (swarm-bee)")
+@unittest.skipUnless(_HAVE_FEEDS, "install recordstore[feeds] (swarmfs + coincurve)")
 class TestSwarmFeedPointer(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
-        import requests
+        import json
+        import urllib.request
 
         cls.batch = os.environ.get("BEE_BATCH")
         if not cls.batch:
-            r = requests.post(f"{BEE_API}/stamps/100000000/20", timeout=60)
-            r.raise_for_status()
-            cls.batch = r.json()["batchID"]
+            req = urllib.request.Request(f"{BEE_API}/stamps/100000000/20", method="POST")
+            with urllib.request.urlopen(req, timeout=60) as r:
+                cls.batch = json.load(r)["batchID"]
             deadline = time.time() + 120
             while time.time() < deadline:  # wait until the batch is usable
-                s = requests.get(f"{BEE_API}/stamps/{cls.batch}", timeout=30)
-                if s.ok and s.json().get("usable"):
-                    break
+                try:
+                    with urllib.request.urlopen(f"{BEE_API}/stamps/{cls.batch}", timeout=30) as s:
+                        if json.load(s).get("usable"):
+                            break
+                except OSError:
+                    pass
                 time.sleep(2)
             else:
                 raise RuntimeError("postage batch never became usable")
@@ -84,7 +89,7 @@ class TestSwarmFeedPointer(unittest.TestCase):
         writer.set(ref)
 
         from recordstore import SwarmFeedPointer
-        owner = writer._owner.to_hex()  # address derived from the signer
+        owner = writer.owner  # address derived from the signer
         reader = SwarmFeedPointer(BEE_API, topic, owner=owner)
         self.assertEqual(reader.get(), ref)
         with self.assertRaises(RuntimeError):
@@ -107,7 +112,6 @@ class TestSwarmFeedPointer(unittest.TestCase):
         refs = [secrets.token_hex(32) for _ in range(3)]
         for r in refs:
             p.set(r)
-        self.assertTrue(p._can_hint)  # transport supports the hint here
         self.assertEqual(p.get(), refs[-1])
 
     def test_cold_read_resolves_without_retries(self):
@@ -163,7 +167,7 @@ class TestSwarmFeedPointer(unittest.TestCase):
         roots = [secrets.token_hex(32) for _ in range(3)]
         for r in roots:
             writer.set(r)
-        owner = writer._owner.as_bytes().hex()
+        owner = writer.owner
         reader = SwarmFeedPointer(BEE_API, topic, owner=owner)
         envelopes = None
         for _ in range(10):                       # a fresh chunk may take a moment to be retrievable

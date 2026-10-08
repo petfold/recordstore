@@ -7,7 +7,7 @@ Compact, definition-first, no narrative. The tutorial lives in the
 `tests/test_reference.py` — if a name or parameter in this file and the
 code disagree, the suite fails.
 
-Package version this file describes: `0.21.2`.
+Package version this file describes: `0.22.0`.
 
 ## 1. Vocabulary
 
@@ -34,8 +34,8 @@ Package version this file describes: `0.21.2`.
 | command | gives |
 |---|---|
 | `pip install recordstore` | core: memory/dir/fsspec-less local stores, merge, diff, proofs |
-| `pip install "recordstore[bee]"` | `BeeBytesStore` (requests) |
-| `pip install "recordstore[feeds]"` | `SwarmFeedPointer` (swarm-bee) |
+| `pip install "recordstore[bee]"` | `BeeBytesStore`, and reading or verifying feeds (swarmfs) |
+| `pip install "recordstore[feeds]"` | `SwarmFeedPointer` writes (swarmfs + coincurve) |
 | `pip install "recordstore[stamps]"` | `postage_batch_id="auto"`, `batch_status` (swarmfs ≥ 0.4) |
 | `pip install "recordstore[fsspec]"` | `FsspecBytesStore` |
 | `pip install "recordstore[swarm-addressing]"` | `DirBytesStore(addressing="swarm")` (swarmfs ≥ 0.9 — keccak is in its base install) |
@@ -166,9 +166,10 @@ directory (flock, POSIX).
 | `RecordStore.prove_extension` | `(base, prefixes=("",), addressing=None)` | JSON-ready envelope `{format, version, addressing, base, root, prefixes, nodes}` carrying the raw node blobs of both roots along what changed under the prefixes; self-verified before return. |
 | `verify_extension` | `(proof, base, root)` | pure function: returns the proven prefixes when `root` holds every record `base` held under them with the same value; raises `ProofError` on a record missing or changed, a node the walk needs and the proof lacks, or any envelope mismatch. |
 | `EXTENSION_FORMAT` | constant | `"recordstore-extension-proof"`, version 1. |
+| `SwarmFeedPointer.owner` | property | the feed owner's 20-byte address, hex (no `0x`); `.topic` the 32-byte topic, hex. |
 | `SwarmFeedPointer.update` | `(index)` | the feed's update at `index` as an envelope `{format, version, owner, topic, index, soc}` carrying the raw owner-signed single-owner chunk. |
 | `SwarmFeedPointer.updates` | `(start=0, stop=None)` | the updates from `start` up to `stop` (default: past the probed tip), in index order — the owner-signed sequence of the store's published roots. |
-| `verify_feed_update` | `(update, owner, topic)` | pure (needs `swarm-bee` for the chunk arithmetic, no node): returns `FeedUpdate(index, root, timestamp)` — the timestamp is the writer's claim, not a clock; raises `ProofError` for another owner, feed or index, or a chunk that does not verify. `topic` is the name or the 32-byte hex. |
+| `verify_feed_update` | `(update, owner, topic)` | pure (needs swarmfs for the chunk arithmetic, no node, no compiled dependency): returns `FeedUpdate(index, root, timestamp)` — the timestamp is the writer's claim, not a clock; raises `ProofError` for another owner, feed or index, or a chunk that does not verify. `topic` is the name or the 32-byte hex. |
 | `verify_equivocation` | `(a, b, owner, topic)` | both envelopes verify, at one index, with different roots → that index; `ProofError` otherwise. |
 | `FEED_UPDATE_FORMAT` | constant | `"recordstore-feed-update"`, version 1. |
 
