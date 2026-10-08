@@ -93,7 +93,7 @@ def test_node_cache_is_bounded_after_full_iteration():
 
 
 def test_hostile_cache_smaller_than_one_commit():
-    """Pending placeholders are exempt from eviction, so a commit whose
+    """A commit's placeholders live outside the cache, so a commit whose
     buffered node set dwarfs the cache bound still lands correctly."""
     store = RecordStore(MemoryBytesStore(), node_cache_size=2)
     oracle = {}
@@ -143,3 +143,32 @@ def test_merge_unaffected_by_small_cache():
     merged = RecordStore.merge(blobs, base, ours, theirs)
     m = RecordStore.at(merged, blobs)
     assert m.get("k1") == "ours" and m.get("k2") == "theirs"
+
+
+def test_a_commit_keeps_its_placeholders_out_of_the_node_cache():
+    """A commit builds the trie through `pending:` placeholders. They used
+    to be cached too and exempt from eviction, so once a commit's
+    placeholders outnumbered the cache every insertion scanned all of them
+    for a victim: a commit of ~12,000 records took over ten minutes (found
+    by the 2026-10-09 review). They now live only in `_Trie._pending`."""
+    from recordstore import recordstore as rs
+    seen = []
+    original = rs._NodeCache.__setitem__
+
+    def spy(self, ref, node):
+        seen.append(ref)
+        return original(self, ref, node)
+
+    rs._NodeCache.__setitem__ = spy
+    try:
+        small = RecordStore(MemoryBytesStore(), node_cache_size=32)
+        for i in range(2000):
+            small.put(f"key/{i:05d}", i)
+        root = small.commit()
+    finally:
+        rs._NodeCache.__setitem__ = original
+    assert not [ref for ref in seen if ref.startswith("pending:")]
+    big = RecordStore(MemoryBytesStore())
+    for i in range(2000):
+        big.put(f"key/{i:05d}", i)
+    assert big.commit() == root

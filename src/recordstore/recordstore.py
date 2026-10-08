@@ -736,10 +736,13 @@ DEFAULT_NODE_CACHE_SIZE = 65536
 
 
 class _NodeCache:
-    """Bounded LRU over decoded trie nodes. Any entry may be dropped —
-    except commit-scoped `pending:` placeholders, which exist only here
-    until `_flush` resolves them; evicting one mid-commit would lose the
-    node, so they are exempt (and `_reset_buffer` removes them)."""
+    """Bounded LRU over decoded trie nodes. Any entry may be dropped.
+    Commit-scoped `pending:` placeholders are kept out of it, in
+    `_Trie._pending` (until 0.22.2 they were cached too, and exempt from
+    eviction: once a commit's placeholders outnumbered the cache, every
+    insertion scanned all of them for a victim, so a commit of ~12,000
+    records took over ten minutes instead of seconds). The exemption below
+    stays as a guard."""
 
     def __init__(self, maxsize: int):
         self.maxsize = max(1, maxsize)
@@ -806,7 +809,14 @@ class _Trie:
             {int(k, 16): v for k, v in obj["c"].items()},
         )
 
+    def _has(self, ref: Ref) -> bool:
+        """Is `ref` at hand without a fetch: a commit's placeholder, or cached?"""
+        return ref in self._pending or ref in self._cache
+
     def _load(self, ref: Ref) -> _Node:
+        node = self._pending.get(ref)
+        if node is not None:
+            return node            # a placeholder of the commit being built
         node = self._cache.get(ref)
         if node is None:
             node = self._decode(self._blobs.get(ref))
@@ -819,7 +829,7 @@ class _Trie:
         `get` if the store has no `get_many`)."""
         out: Dict[Ref, _Node] = {}
         for r in set(refs):
-            node = self._cache.get(r)
+            node = self._pending.get(r) or self._cache.get(r)
             if node is not None:
                 out[r] = node
         missing = [r for r in set(refs) if r not in out]
@@ -849,8 +859,7 @@ class _Trie:
             # resolved bottom-up in `_flush`, once this node's children are real.
             pid = f"pending:{self._pn}"
             self._pn += 1
-            self._pending[pid] = node
-            self._cache[pid] = node  # so `_load` serves it during the build
+            self._pending[pid] = node  # `_load` serves it during the build
             return pid
         ref = self._blobs.put(
             self._serialize(node.prefix, node.value_ref, node.children))
@@ -899,8 +908,6 @@ class _Trie:
         return resolved[root]
 
     def _reset_buffer(self) -> None:
-        for pid in self._pending:
-            self._cache.pop(pid, None)
         self._pending.clear()
         self._buffering = False
         self._pn = 0
@@ -948,7 +955,7 @@ class _Trie:
         return self._load(side) if isinstance(side, str) else side
 
     def _unloaded(self, pair) -> bool:
-        return any(isinstance(x, str) and x not in self._cache
+        return any(isinstance(x, str) and not self._has(x)
                    for x in pair[:2])
 
     @staticmethod
@@ -1027,7 +1034,7 @@ class _Trie:
             missing, seen = [], set()
             for a, b, _ in frontier:
                 for side in (a, b):
-                    if (isinstance(side, str) and side not in self._cache
+                    if (isinstance(side, str) and not self._has(side)
                             and side not in seen
                             and len(missing) < budget - fetched):
                         seen.add(side)
@@ -1123,14 +1130,14 @@ class _Trie:
         while frontier and fetched < budget and visited < 2 * budget:
             missing = []
             for ref, _ in frontier:
-                if ref not in self._cache and len(missing) < budget - fetched:
+                if not self._has(ref) and len(missing) < budget - fetched:
                     missing.append(ref)
             if missing:
                 self._load_many(missing)
                 fetched += len(missing)
             nxt = []
             for ref, acc in frontier:
-                node = self._cache.get(ref)
+                node = self._pending.get(ref) or self._cache.get(ref)
                 if node is None:
                     continue  # beyond this round's budget
                 visited += 1
@@ -1155,7 +1162,7 @@ class _Trie:
         # lookahead window instead of one per node.
         stack = [(root, b"")]
         while stack:
-            if stack[-1][0] not in self._cache:
+            if not self._has(stack[-1][0]):
                 self._prefetch(stack, prefix)
             ref, acc = stack.pop()
             node = self._load(ref)
@@ -1182,7 +1189,7 @@ class _Trie:
             return
         stack = [(root, b"")]
         while stack:
-            if stack[-1][0] not in self._cache:
+            if not self._has(stack[-1][0]):
                 self._prefetch(stack, prefix)
             ref, acc = stack.pop()
             node = self._load(ref)

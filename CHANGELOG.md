@@ -6,6 +6,21 @@ All notable changes to this project are documented here. The format is based on
 
 ## [Unreleased]
 
+## [0.22.2] — 2026-10-09
+
+### Fixed
+
+- **A large commit no longer takes quadratic time.** A commit builds the
+  trie through `pending:` placeholders, which were also put in the node
+  cache and exempt from its eviction. Once a commit's placeholders
+  outnumbered the cache (65,536 by default: about 11,000 records written
+  in one commit), every insertion scanned all of them for something to
+  evict and found nothing. Committing ontodag's union of packs (11,900
+  records) took over ten minutes; it now takes 1.1 s. Placeholders live
+  only in the trie's own pending table, which `_load` and `_load_many`
+  read first. Found by the 2026-10-09 review;
+  `test_a_commit_keeps_its_placeholders_out_of_the_node_cache`.
+
 ## [0.22.1] — 2026-10-08
 
 ### Changed
