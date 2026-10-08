@@ -18,7 +18,11 @@ All notable changes to this project are documented here. The format is based on
   by level (up to 4,096 nodes, never more than half the node cache, and
   never outside a scanned prefix). Counted on that store: 2,797 sequential
   rounds before, 393 after, which is the floor at 32 requests in flight
-  ((7,181 trie nodes + 5,380 records) / 32).
+  ((7,181 trie nodes + 5,380 records) / 32). Live against a Bee 2.8.2 light
+  node, two published stores of the same size: 0.21.1 read `economics`
+  (14,024 blobs) in 3,260 calls and 324 s, this walk read `computing`
+  (14,635 blobs) in 46 calls and 46 s. Part of both stores was already on
+  the node, which shortens both runs alike.
 - `items()` fetches records in windows of at least 256 (it was the store's
   concurrency, 32 for `BeeBytesStore`): each window waits for its slowest
   fetch, so a window several times the concurrency waits less often.
