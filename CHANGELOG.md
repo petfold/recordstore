@@ -6,6 +6,23 @@ All notable changes to this project are documented here. The format is based on
 
 ## [Unreleased]
 
+### Changed
+
+- **A full walk of the trie costs rounds per level, not per node.**
+  `items()`, `keys()` and the working-set walk behind pins and squashing
+  (`refs_under`) loaded each node's children as their own batch, so a
+  network store paid one round trip per trie node with children: 2,679 for
+  a 5,380-record store, which took 552 s against a Bee light node. The walk
+  stays depth-first, so keys still stream in sorted order with bounded
+  memory, but whenever it reaches an unloaded node it now loads ahead level
+  by level (up to 4,096 nodes, never more than half the node cache, and
+  never outside a scanned prefix). Counted on that store: 2,797 sequential
+  rounds before, 393 after, which is the floor at 32 requests in flight
+  ((7,181 trie nodes + 5,380 records) / 32).
+- `items()` fetches records in windows of at least 256 (it was the store's
+  concurrency, 32 for `BeeBytesStore`): each window waits for its slowest
+  fetch, so a window several times the concurrency waits less often.
+
 ## [0.21.1] — 2026-10-08
 
 ### Changed

@@ -759,6 +759,14 @@ class _NodeCache:
 
 
 class _Trie:
+    #: Most nodes a full walk (`items`, `refs_under`) loads ahead of where it
+    #: is. Walking one node at a time cost one round trip per node with
+    #: children (2,679 for a 5,380-record store: ~10 minutes on a Bee light
+    #: node); looking ahead level by level costs about one per trie level per
+    #: lookahead window. Capped at half the node cache, so prefetched nodes
+    #: are still there when the walk reaches them.
+    WALK_LOOKAHEAD = 4096
+
     def __init__(self, bytes_store: BytesStore,
                  cache_size: int = DEFAULT_NODE_CACHE_SIZE):
         self._blobs = bytes_store
@@ -1055,6 +1063,38 @@ class _Trie:
             return self._store(merged)
         return self._store(_Node(prefix, value_ref, children))
 
+    def _prefetch(self, stack: List[Tuple[Ref, bytes]], prefix: bytes) -> None:
+        """Load what a depth-first walk will visit next, in as few batches
+        as the trie has levels: the unloaded refs on its stack (nearest
+        first) and, level by level, the children of those already loaded,
+        skipping subtrees that cannot hold `prefix`. Bounded by
+        `WALK_LOOKAHEAD` and by half the node cache. Only loads; the walk's
+        order and results are its own."""
+        budget = max(1, min(self.WALK_LOOKAHEAD, self._cache.maxsize // 2))
+        frontier = list(reversed(stack))  # nearest to be visited first
+        fetched = visited = 0
+        while frontier and fetched < budget and visited < 2 * budget:
+            missing = []
+            for ref, _ in frontier:
+                if ref not in self._cache and len(missing) < budget - fetched:
+                    missing.append(ref)
+            if missing:
+                self._load_many(missing)
+                fetched += len(missing)
+            nxt = []
+            for ref, acc in frontier:
+                node = self._cache.get(ref)
+                if node is None:
+                    continue  # beyond this round's budget
+                visited += 1
+                full = acc + node.prefix
+                probe = min(len(full), len(prefix))
+                if full[:probe] != prefix[:probe]:
+                    continue
+                for byte in sorted(node.children):
+                    nxt.append((node.children[byte], full + bytes([byte])))
+            frontier = nxt
+
     def items(self, root: Optional[Ref],
               prefix: bytes = b"") -> Iterator[Tuple[bytes, Ref]]:
         """All (key, value_ref) with key under `prefix`, in sorted key order."""
@@ -1062,12 +1102,14 @@ class _Trie:
             return
         # Sorted pre-order DFS: a node's own key precedes its descendants',
         # children visited in byte order, so keys come out sorted with no final
-        # sort and no result-set-sized buffer. Each node's children are
-        # prefetched in one batch so a network store still parallelises sibling
-        # loads (children pop from the stack as cache hits).
-        self._load_many([root])  # route the root through the batch path too
+        # sort and no result-set-sized buffer. Loading is separate: whenever
+        # the walk reaches an unloaded node, `_prefetch` loads ahead level by
+        # level, so a network store pays one round per trie level per
+        # lookahead window instead of one per node.
         stack = [(root, b"")]
         while stack:
+            if stack[-1][0] not in self._cache:
+                self._prefetch(stack, prefix)
             ref, acc = stack.pop()
             node = self._load(ref)
             full = acc + node.prefix
@@ -1077,11 +1119,8 @@ class _Trie:
                 continue
             if node.value_ref is not None and full.startswith(prefix):
                 yield (full, node.value_ref)
-            child_bytes = sorted(node.children)
-            if child_bytes:
-                self._load_many([node.children[b] for b in child_bytes])
-                for byte in reversed(child_bytes):  # reverse: smallest pops first
-                    stack.append((node.children[byte], full + bytes([byte])))
+            for byte in sorted(node.children, reverse=True):  # smallest pops first
+                stack.append((node.children[byte], full + bytes([byte])))
 
     def refs_under(self, root: Optional[Ref],
                    prefix: bytes = b"") -> Iterator[Tuple[str, Ref]]:
@@ -1094,9 +1133,10 @@ class _Trie:
         compute itself."""
         if root is None:
             return
-        self._load_many([root])
         stack = [(root, b"")]
         while stack:
+            if stack[-1][0] not in self._cache:
+                self._prefetch(stack, prefix)
             ref, acc = stack.pop()
             node = self._load(ref)
             full = acc + node.prefix
@@ -1106,11 +1146,8 @@ class _Trie:
             yield ("node", ref)
             if node.value_ref is not None and full.startswith(prefix):
                 yield ("value", node.value_ref)
-            child_bytes = sorted(node.children)
-            if child_bytes:
-                self._load_many([node.children[b] for b in child_bytes])
-                for byte in child_bytes:
-                    stack.append((node.children[byte], full + bytes([byte])))
+            for byte in sorted(node.children):
+                stack.append((node.children[byte], full + bytes([byte])))
 
 
 # ---------------------------------------------------------------------------
@@ -2270,7 +2307,10 @@ class RecordStore:
         each window (the fast path for hydrating a store) while memory stays
         bounded to one window rather than the whole result set. Values are
         deep-copied, exactly like `get`."""
-        window = max(1, getattr(self._blobs, "max_concurrent_reads", 256))
+        # A window is a barrier (each waits for its slowest fetch), so it is
+        # several times the store's concurrency rather than equal to it:
+        # 256 records keep 32 requests in flight with eight waves per wait.
+        window = max(256, getattr(self._blobs, "max_concurrent_reads", 256))
         buf: list = []
         refs: List[Ref] = []
         for key, vref, staged in self._merged(prefix):

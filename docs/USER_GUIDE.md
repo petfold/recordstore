@@ -842,10 +842,13 @@ comparing roots see “no change.”
   distinct path.
 - Reads through `BeeBytesStore` are one HTTP roundtrip per (uncached) blob.
   To hydrate an entire dataset (or a prefix) use `items()` rather than
-  `keys()` + `get()` per key: it batches the value-blob reads (and the trie
-  walk fetches each node's children as a batch too), so `BeeBytesStore` fetches
-  them concurrently instead of one serial round trip at a time — a large win on
-  a high-latency link. Tune the parallelism with `BeeBytesStore(...,
+  `keys()` + `get()` per key: it batches the value-blob reads in windows of
+  256, and the trie walk loads ahead level by level (since 0.21.2), so
+  `BeeBytesStore` fetches them concurrently instead of one serial round trip at
+  a time — a large win on a high-latency link. For a 5,380-record store that
+  is about 390 rounds of 32 requests, where the walk used to take one round per
+  trie node with children (about 2,800 rounds, ten minutes on a Bee light
+  node). Tune the parallelism with `BeeBytesStore(...,
   max_concurrent_reads=N)` (default 32).
 - `BeeBytesStore` keeps a pooled, keep-alive HTTP session, so no blob op pays a
   fresh TCP/TLS handshake — the single biggest per-op saving on a slow link.

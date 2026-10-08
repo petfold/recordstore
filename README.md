@@ -232,10 +232,10 @@ loopmarket's register sequence, R5). Extracted from
 preserved; validated against a live Bee 2.8.2 light node on Gnosis mainnet
 (roundtrips, canonical roots on real BMT references, network retrievability,
 and since 0.21.0 three roots published on a feed and their signed sequence
-verified offline) — CI collects **186 tests** offline (the live-node tests
+verified offline) — CI collects **190 tests** offline (the live-node tests
 skip there; `tests/test_local_first.py`'s 18 more need `swarmfs`), and with
-`BEE_API` set and every extra installed the whole suite of 204, live tests
-included, is **203 passed / 1 skipped** (the count check only CI enforces).
+`BEE_API` set and every extra installed the whole suite of 208, live tests
+included, is **207 passed / 1 skipped** (the count check only CI enforces).
 
 Landmarks: `SwarmFeedPointer` (owner-signed Swarm feed, over `swarm-bee`) in
 v0.4.0; three-way `merge` in v0.8.0; auto-reconciling `commit(reconcile=True)` in
