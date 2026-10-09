@@ -131,7 +131,7 @@ def test_cable_pulled_mid_workload(tmp_path):
     store = synced_store(tmp_path, remote)
     try:
         store.put("before", 1)
-        r1 = store.commit()
+        store.commit()
         store.sync(timeout=WAIT)             # healthy: confirmed
 
         remote.fail = True                   # ── cable pulled ──
@@ -170,7 +170,6 @@ def test_evicted_records_heal_through_the_syncer(tmp_path):
 def test_reconcile_through_journal_backend(tmp_path):
     """Two writers over one local store: reconcile merges and the merge's
     blobs are journaled too (recorded through the commit's recorders)."""
-    remote = FakeRemote()
     local = LocalStore(str(tmp_path / "store"), addressing="sha256")
     pointer = MemoryPointer()
     a = LocalFirstRecordStore(CachedBytesStore(local, 1 << 20), local,

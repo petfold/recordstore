@@ -16,13 +16,14 @@ feed publishes; one test checks they are byte-identical to the chunks
 swarm-bee (the pointer's library before 0.22) builds, when it is
 installed. Needs swarmfs with coincurve (to sign the fixtures)."""
 
+import importlib
 import json
 import unittest
 from types import SimpleNamespace
 
 try:
-    import coincurve  # noqa: F401  (to sign the fixtures)
-    import swarmfs  # noqa: F401
+    importlib.import_module("coincurve")          # to sign the fixtures
+    importlib.import_module("swarmfs")
     _HAVE_SIGNER = True
 except ImportError:
     _HAVE_SIGNER = False

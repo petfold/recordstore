@@ -15,6 +15,7 @@ docstring); these tests exercise the read-your-writes cache and the
 retry-until-stable read path that exist precisely to paper over that.
 """
 
+import importlib
 import os
 import secrets
 import time
@@ -23,8 +24,8 @@ import unittest
 BEE_API = os.environ.get("BEE_API")
 
 try:
-    import coincurve  # noqa: F401  (feed signing)
-    import swarmfs  # noqa: F401
+    importlib.import_module("coincurve")          # feed signing
+    importlib.import_module("swarmfs")
     _HAVE_FEEDS = True
 except ImportError:
     _HAVE_FEEDS = False

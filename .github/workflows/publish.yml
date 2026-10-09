@@ -23,6 +23,9 @@ jobs:
         with:
           python-version: "3.12"
       - run: pip install -e ".[test]"
+      # The lint is tests.yml's, repeated because a tag need not wait for it.
+      - run: pip install pyflakes==3.4.0
+      - run: git ls-files -- '*.py' | xargs python -m pyflakes
       # A v* tag publishes irreversibly — PyPI never allows re-uploading a
       # version, only yanking. Run the suite first so a tag cannot ship a red
       # build. BEE_API is unset, so the live-node tests skip themselves.

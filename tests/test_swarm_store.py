@@ -5,8 +5,6 @@ wiring (which backend, which pointer, shared postage batch) rather than
 Bee behaviour, which the live tests cover.
 """
 
-import sys
-import types
 import unittest
 from unittest import mock
 

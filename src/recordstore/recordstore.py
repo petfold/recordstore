@@ -39,7 +39,6 @@ import os
 import time
 import warnings
 from collections import OrderedDict
-from concurrent.futures import ThreadPoolExecutor
 from typing import (Dict, Iterable, Iterator, List, NamedTuple, Optional,
                     Protocol, Tuple)
 

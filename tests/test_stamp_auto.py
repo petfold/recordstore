@@ -3,6 +3,7 @@
 renewing are deliberately the caller's move, since a library must not
 spend the node wallet's xBZZ."""
 
+import importlib
 import sys
 import types
 import unittest
@@ -68,7 +69,7 @@ def _fake_swarmfs(info=None, buckets=None, legacy=False, record=None):
 
 
 try:
-    import swarmfs  # noqa: F401 — BeeBytesStore talks to Bee through it
+    importlib.import_module("swarmfs")          # BeeBytesStore talks to Bee through it
     HAVE_SWARMFS = True
 except ImportError:  # pragma: no cover
     HAVE_SWARMFS = False

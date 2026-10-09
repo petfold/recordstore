@@ -8,6 +8,7 @@ them and that roots match MemoryBytesStore's — which is what "portable
 between backends" means for sha256 addressing.
 """
 
+import importlib
 import os
 import shutil
 import tempfile
@@ -17,7 +18,7 @@ from recordstore import (DirBytesStore, FsspecBytesStore, MemoryBytesStore,
                          RecordStore)
 
 try:
-    import fsspec  # noqa: F401
+    importlib.import_module("fsspec")
     HAVE_FSSPEC = True
 except ImportError:
     HAVE_FSSPEC = False
@@ -169,7 +170,7 @@ class TestSwarmAddressing(unittest.TestCase):
 
     def setUp(self):
         try:
-            from swarmfs.splitter import content_address  # noqa: F401
+            importlib.import_module("swarmfs.splitter")
         except ImportError:
             self.skipTest("needs swarmfs[feeds]")
         self.tmp = tempfile.mkdtemp()

@@ -101,7 +101,7 @@ def test_undo_moves_the_pointer_others_read():
 def test_undo_drops_staged_changes():
     # The state you asked for is the state you get.
     s = store()
-    roots = three(s)
+    three(s)
     s.put("scratch", {"v": 1})
     assert s.status()["staged"] == 1
     s.undo()
@@ -280,7 +280,7 @@ def test_a_no_op_commit_is_not_a_state():
 
 def test_local_first_stores_get_it_from_their_HEAD(tmp_path):
     # No extra wiring: a local-first store's HEAD *is* a FilePointer.
-    swarmfs = pytest.importorskip("swarmfs.localstore")   # noqa: F841
+    pytest.importorskip("swarmfs.localstore")
     from recordstore import local_first_store
 
     with local_first_store(str(tmp_path / "lf"), addressing="sha256") as s:

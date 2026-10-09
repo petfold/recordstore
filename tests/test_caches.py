@@ -7,7 +7,6 @@ hostile bounds (smaller than one commit's working set) and assert results
 against a plain dict oracle.
 """
 
-import pytest
 
 from recordstore import CachedBytesStore, MemoryBytesStore, RecordStore
 
