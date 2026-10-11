@@ -6,6 +6,16 @@ All notable changes to this project are documented here. The format is based on
 
 ## [Unreleased]
 
+### Fixed
+
+- **A trie node that cannot be fetched no longer reads as an absent key.**
+  `RecordStore.get` let the bytes store's `KeyError` escape from the trie
+  walk (`BeeBytesStore` raises one for a reference Bee cannot find), so
+  `contains` answered False and a lazy reader took the record for missing:
+  a wrong answer where there should be none. It now raises
+  `RecordUnavailable`, as an unreachable value already did. Found building
+  ontodag's browser reader.
+
 ## [0.22.3] — 2026-10-11
 
 ### Fixed

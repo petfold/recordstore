@@ -732,3 +732,50 @@ class TestDiff(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TestUnreachableTrieNode(unittest.TestCase):
+    """A trie node whose blob cannot be fetched means the keys under it are
+    unknown right now, never that they are absent. `get` let the bytes
+    store's KeyError escape from the trie walk, so `contains` said False and
+    a lazy reader took the record for missing (found 2026-10-11, building
+    ontodag's browser reader)."""
+
+    def setUp(self):
+        self.blobs = MemoryBytesStore()
+        s = RecordStore(self.blobs)
+        for i in range(200):
+            s.put(f"k{i:03d}", {"i": i})
+        self.root = s.commit()
+        s = RecordStore.at(self.root, self.blobs)
+        # drop one trie node below the root: the keys under it become unreachable
+        trie = _Trie(self.blobs)
+        node = trie._load(self.root)
+        self.lost = next(iter(node.children.values()))
+        del self.blobs.blobs[self.lost]
+        self.store = s
+
+    def test_get_raises_unavailable_not_keyerror(self):
+        from recordstore import RecordUnavailable
+        hit = 0
+        for i in range(200):
+            try:
+                self.store.get(f"k{i:03d}")
+            except RecordUnavailable:
+                hit += 1
+            except KeyError:
+                self.fail(f"k{i:03d} read as absent while its trie node is unreachable")
+        self.assertGreater(hit, 0)
+
+    def test_contains_does_not_answer_false(self):
+        from recordstore import RecordUnavailable
+        with self.assertRaises(RecordUnavailable):
+            for i in range(200):
+                self.store.contains(f"k{i:03d}")
+
+    def test_absent_key_is_still_absent(self):
+        # every key starts with "k", so "zzz" leaves the trie at its root,
+        # never touching the lost node: that is a plain absence
+        with self.assertRaises(KeyError):
+            self.store.get("zzz")
+        self.assertFalse(self.store.contains("zzz"))

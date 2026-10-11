@@ -2190,7 +2190,15 @@ class RecordStore:
             if staged is _TOMBSTONE:
                 raise KeyError(key)
             return json.loads(canonical_bytes(staged))  # deep copy
-        vref = self._trie.get(self._root, kb)
+        try:
+            vref = self._trie.get(self._root, kb)
+        except (KeyError, OSError) as e:
+            # The trie answers absence by returning None; an exception from
+            # the walk is a node the bytes store could not produce, so the
+            # key is unknown right now, not absent.
+            raise RecordUnavailable(
+                f"record {key!r}: a trie node on its path is unreachable: "
+                f"{e}") from e
         if vref is None:
             raise KeyError(key)
         try:
