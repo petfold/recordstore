@@ -6,6 +6,8 @@ All notable changes to this project are documented here. The format is based on
 
 ## [Unreleased]
 
+## [0.22.3] — 2026-10-11
+
 ### Fixed
 
 - **A store that only reads no longer asks for a postage batch.**
