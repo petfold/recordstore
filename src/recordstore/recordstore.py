@@ -39,7 +39,7 @@ import os
 import time
 import warnings
 from collections import OrderedDict
-from typing import (Dict, Iterable, Iterator, List, NamedTuple, Optional,
+from typing import (Any, Dict, Iterable, Iterator, List, NamedTuple, Optional,
                     Protocol, Tuple)
 
 Ref = str  # hex-encoded reference to a stored blob
@@ -934,6 +934,36 @@ class _Trie:
             root = node.children.get(key[0])
             key = key[1:]
         return None
+
+    def get_many(self, root: Optional[Ref],
+                 keys: Iterable[bytes]) -> Dict[bytes, Optional[Ref]]:
+        """`get` for many keys at once: every key still descending moves down
+        one level per round, and each round's nodes are loaded together, so a
+        network store pays about one round trip per trie level rather than
+        one per node."""
+        found: Dict[bytes, Optional[Ref]] = {}
+        walking = [(k, k, root) for k in set(keys)] if root is not None else []
+        if root is None:
+            found = {k: None for k in set(keys)}
+        while walking:
+            nodes = self._load_many([ref for _k, _rest, ref in walking])
+            descending = []
+            for key, rest, ref in walking:
+                node = nodes[ref]
+                if not rest.startswith(node.prefix):
+                    found[key] = None
+                    continue
+                rest = rest[len(node.prefix):]
+                if rest == b"":
+                    found[key] = node.value_ref
+                    continue
+                child = node.children.get(rest[0])
+                if child is None:
+                    found[key] = None
+                else:
+                    descending.append((key, rest[1:], child))
+            walking = descending
+        return found
 
     # -- diff (structural, prunes shared subtrees) --------------------------
 
@@ -2211,6 +2241,38 @@ class RecordStore:
             raise RecordUnavailable(
                 f"record {key!r} exists (value {vref[:16]}…) but its bytes "
                 f"are unreachable: {e}") from e
+
+    def get_many(self, keys: Iterable[str]) -> Dict[str, Any]:
+        """The records for several keys, read together; a key that is absent
+        is left out, as `get` raises `KeyError` for it. Over a network store
+        the trie is walked for every key at once, level by level, and the
+        values are fetched in one batch: about one round trip per trie level
+        instead of one per record. A record whose bytes are unreachable
+        raises `RecordUnavailable`, as in `get`."""
+        out: Dict[str, Any] = {}
+        walk: Dict[bytes, str] = {}
+        for key in keys:
+            kb = self._check_key(key)
+            if key in self._staged:
+                staged = self._staged[key]
+                if staged is not _TOMBSTONE:
+                    out[key] = json.loads(canonical_bytes(staged))
+            else:
+                walk[kb] = key
+        try:
+            vrefs = self._trie.get_many(self._root, list(walk))
+            wanted = {walk[kb]: v for kb, v in vrefs.items() if v is not None}
+            refs = sorted(set(wanted.values()))
+            get_many = getattr(self._blobs, "get_many", None)
+            blobs = (get_many(refs) if get_many
+                     else {r: self._blobs.get(r) for r in refs})
+        except (KeyError, OSError) as e:
+            raise RecordUnavailable(
+                f"{len(walk)} records: part of their trie or values is "
+                f"unreachable: {e}") from e
+        for key, vref in wanted.items():
+            out[key] = _decode_value(blobs[vref])
+        return out
 
     def contains(self, key: str) -> bool:
         try:

@@ -6,6 +6,15 @@ All notable changes to this project are documented here. The format is based on
 
 ## [Unreleased]
 
+### Added
+
+- **`RecordStore.get_many(keys)`**: the records for several keys, read
+  together. The trie is walked for every key at once, one batch per
+  level, and the values come in one batch, so over a network store the
+  cost is about one round trip per trie level instead of one per record.
+  For ontodag's lazy reader in a browser, where every round trip is a
+  wait.
+
 ### Fixed
 
 - **A trie node that cannot be fetched no longer reads as an absent key.**

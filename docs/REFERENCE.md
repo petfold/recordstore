@@ -82,7 +82,8 @@ Everything importable from `recordstore` (exactly `__all__`):
 |---|---|---|
 | `RecordStore` | `(bytes_store, root=None, pointer=None, node_cache_size=65536)` | open at `root`, or at `pointer.get()` when a pointer is given and `root` is None. `node_cache_size` bounds the decoded trie-node LRU. |
 | `RecordStore.at` | `(root, bytes_store)` | classmethod: read-only snapshot of any root. Writes raise `TypeError`. |
-| `RecordStore.get` | `(key)` | the record (deep copy). `KeyError` if absent; `RecordUnavailable` if it exists but its bytes are unreachable. |
+| `RecordStore.get` | `(key)` | the record (deep copy). `KeyError` if absent; `RecordUnavailable` if it exists but its bytes, or a trie node on its path, are unreachable. |
+| `RecordStore.get_many` | `(keys)` | `{key: record}` for the keys that exist (absent keys left out), staged changes visible. The trie is walked for all keys at once, one batch per level, and the values come in one batch: about one round trip per trie level over a network store. `RecordUnavailable` if anything on the way is unreachable. |
 | `RecordStore.put` | `(key, value)` | stage a write. `ValueError`/`TypeError` for non-JSON values, NaN/Infinity, empty key. |
 | `RecordStore.delete` | `(key)` | stage a delete. `KeyError` if the key exists nowhere. |
 | `RecordStore.contains` | `(key)` | `bool`; propagates `RecordUnavailable` rather than answering falsely. |

@@ -779,3 +779,67 @@ class TestUnreachableTrieNode(unittest.TestCase):
         with self.assertRaises(KeyError):
             self.store.get("zzz")
         self.assertFalse(self.store.contains("zzz"))
+
+
+class TestGetMany(unittest.TestCase):
+    """`get_many` answers as `get` does, key by key, and reads the trie for
+    all keys together: about one batch per trie level, never one read per
+    key (a lazy reader in a browser waits for every round trip)."""
+
+    def setUp(self):
+        self.blobs = _CountingStore()
+        s = RecordStore(self.blobs)
+        for i in range(2000):
+            s.put(f"node/{i:05d}", {"i": i, "down": [f"node/{i + 1:05d}"]})
+        self.root = s.commit()
+        self.keys = [f"node/{i:05d}" for i in range(0, 2000, 7)] + ["absent", "node/99999", "node/"]
+
+    def test_same_answers_as_get(self):
+        s = RecordStore.at(self.root, self.blobs)
+        got = s.get_many(self.keys)
+        for k in self.keys:
+            try:
+                self.assertEqual(got[k], s.get(k))
+            except KeyError:
+                self.assertNotIn(k, got)
+        self.assertEqual(len(got), len(range(0, 2000, 7)))
+
+    def test_batches_by_trie_level_not_by_key(self):
+        s = RecordStore.at(self.root, self.blobs)
+        self.blobs.get_calls = self.blobs.get_many_calls = 0
+        s.get_many(self.keys)
+        self.assertEqual(self.blobs.get_calls, 0)
+        # one batch per trie level reached, plus one for the values
+        self.assertLessEqual(self.blobs.get_many_calls, 8)
+        # switched off (one get per key), the same records cost far more reads
+        fresh = RecordStore.at(self.root, self.blobs)
+        self.blobs.get_calls = self.blobs.get_many_calls = 0
+        for k in self.keys:
+            try:
+                fresh.get(k)
+            except KeyError:
+                pass
+        self.assertGreater(self.blobs.get_calls, 10 * 8)
+
+    def test_staged_writes_and_deletes_are_seen(self):
+        s = RecordStore(self.blobs, root=self.root)
+        s.put("node/00000", {"new": True})
+        s.delete("node/00007")
+        s.put("fresh", {"x": 1})
+        got = s.get_many(["node/00000", "node/00007", "fresh", "node/00014"])
+        self.assertEqual(got["node/00000"], {"new": True})
+        self.assertNotIn("node/00007", got)
+        self.assertEqual(got["fresh"], {"x": 1})
+        self.assertEqual(got["node/00014"]["i"], 14)
+
+    def test_empty_store_and_no_keys(self):
+        self.assertEqual(RecordStore(MemoryBytesStore()).get_many(["a", "b"]), {})
+        self.assertEqual(RecordStore.at(self.root, self.blobs).get_many([]), {})
+
+    def test_unreachable_is_raised_not_dropped(self):
+        from recordstore import RecordUnavailable
+        s = RecordStore.at(self.root, self.blobs)
+        vref = _Trie(self.blobs).get(self.root, b"node/00014")
+        del self.blobs.blobs[vref]
+        with self.assertRaises(RecordUnavailable):
+            s.get_many(["node/00014", "node/00021"])
