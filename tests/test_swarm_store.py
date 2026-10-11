@@ -59,6 +59,9 @@ class TestSwarmStore(unittest.TestCase):
             store = swarm_store("t", owner="12" * 20)
         self.assertEqual(store._pointer.kw["owner"], "12" * 20)
         self.assertIsNone(store._pointer.kw["signer"])
+        # a follower writes nothing, so its feed gets no batch and its blob
+        # store is never asked for one (tests/test_stamp_auto.py)
+        self.assertIsNone(store._pointer.kw["postage_batch_id"])
 
     def test_passes_through_transport_options(self):
         with self._patched():

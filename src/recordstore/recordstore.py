@@ -471,7 +471,10 @@ class BeeBytesStore:
     into a chunk tree server-side and returns one reference. Requires a
     usable postage batch id for writes; ``"auto"`` picks one via swarmfs
     (validated, longest TTL — see ``_auto_batch``; selection only, buying
-    is deliberately left to the caller).
+    is deliberately left to the caller), on the first write, as swarmfs's
+    ``BeeRemote`` does: a store that only reads (a follower of someone
+    else's feed, a reader through a public gateway, which serves no
+    ``/stamps``) never asks for one.
 
     The HTTP side is swarmfs's client (since 0.22; it was `requests`), so
     recordstore reaches Bee one way: `get_many`/`put_many` keep
@@ -490,9 +493,8 @@ class BeeBytesStore:
                 "BeeBytesStore talks to Bee through swarmfs; install it with: "
                 'pip install "recordstore[bee]"') from e
         self.api_url = api_url.rstrip("/")
-        if postage_batch_id in (None, "auto"):
-            postage_batch_id = _auto_batch(self.api_url, min_batch_ttl)
-        self.batch = postage_batch_id
+        self._batch = None if postage_batch_id in (None, "auto") else postage_batch_id
+        self._min_batch_ttl = min_batch_ttl
         self.deferred = deferred_upload
         # 32 in flight (16 was a guess): measured against a Bee 2.8.2 light
         # node, reads of chunks it had to fetch scaled almost linearly to 32
@@ -503,6 +505,14 @@ class BeeBytesStore:
         self._async = SwarmClient(self.api_url)
         self._client = SyncSwarmClient(client=self._async)
         self._run = lambda fn, *a: sync(self._client.loop, fn, *a)
+
+    @property
+    def batch(self) -> str:
+        """The postage batch this store writes with, selected on first use
+        when it was given as ``"auto"``."""
+        if self._batch is None:
+            self._batch = _auto_batch(self.api_url, self._min_batch_ttl)
+        return self._batch
 
     def batch_status(self, *, buckets: bool = False):
         """This store's postage batch health — ``(StampInfo, BucketStats |
@@ -2120,9 +2130,9 @@ def swarm_store(
         topic,
         signer=signer,
         owner=owner,
-        # the batch was already resolved (possibly from "auto") by the store,
-        # so the feed's SOC writes and the blob writes share one batch
-        postage_batch_id=blobs.batch,
+        # a publisher's feed writes (SOCs) and blob writes share one batch;
+        # a follower writes nothing and selects none
+        postage_batch_id=blobs.batch if signer is not None else None,
         feed_ttl=feed_ttl,
     )
     return RecordStore(blobs, pointer=pointer)

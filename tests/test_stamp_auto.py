@@ -95,15 +95,31 @@ class TestAutoStamp(unittest.TestCase):
             "recordstore.recordstore._auto_batch", return_value="cd" * 32
         ) as m:
             store = BeeBytesStore("http://x:1633")  # default is 'auto'
+            m.assert_not_called()                   # nothing written yet
+            self.assertEqual(store.batch, "cd" * 32)
+            self.assertEqual(store.batch, "cd" * 32)
         m.assert_called_once_with("http://x:1633", AUTO_MIN_BATCH_TTL)
-        self.assertEqual(store.batch, "cd" * 32)
 
         # the floor is a constructor knob: a short-lived store can opt down
         with mock.patch(
             "recordstore.recordstore._auto_batch", return_value="cd" * 32
         ) as m:
-            BeeBytesStore("http://x:1633", min_batch_ttl=3600)
+            BeeBytesStore("http://x:1633", min_batch_ttl=3600).batch
         m.assert_called_once_with("http://x:1633", 3600)
+
+    @unittest.skipUnless(HAVE_SWARMFS, "swarmfs not installed")
+    def test_a_store_that_only_reads_never_asks_for_a_batch(self):
+        """A follower of someone else's feed, or a reader whose node is a
+        public gateway (which serves no /stamps), writes nothing, so it
+        must not select a batch: until 0.22.2 `"auto"` was resolved when
+        the store was made, and reading through a gateway failed there."""
+        from recordstore.recordstore import BeeBytesStore
+
+        with mock.patch(
+            "recordstore.recordstore._auto_batch",
+            side_effect=AssertionError("a reader asked for a batch"),
+        ):
+            BeeBytesStore("http://x:1633")      # the follower's blobs (tests/test_swarm_store.py)
 
     def test_auto_batch_bridges_to_swarmfs(self):
         record = {}

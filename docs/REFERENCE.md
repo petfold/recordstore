@@ -117,7 +117,7 @@ provides. Blobs are immutable and content-addressed.
 | `MemoryBytesStore` | `()` | sha256 refs; forgets on exit. |
 | `DirBytesStore` | `(path, addressing="sha256")` | `addressing="swarm"` shares Swarm's address space (needs `[swarm-addressing]`). |
 | `FsspecBytesStore` | `(url, addressing="sha256", **storage_options)` | any fsspec filesystem; refuses Swarm URLs (path-addressed ≠ content-addressed). |
-| `BeeBytesStore` | `(api_url, postage_batch_id="auto", deferred_upload=True, max_concurrent_reads=32, min_batch_ttl=86400)` | Swarm refs; `"auto"` picks the usable batch with the longest TTL. Reads are **not** verified — trust your own node (User Guide §7). |
+| `BeeBytesStore` | `(api_url, postage_batch_id="auto", deferred_upload=True, max_concurrent_reads=32, min_batch_ttl=86400)` | Swarm refs; `"auto"` picks the usable batch with the longest TTL, on the first write (a store that only reads never asks). Reads are **not** verified — trust your own node (User Guide §7). |
 | `BeeBytesStore.batch_status` | `(*, buckets=False)` | `(StampInfo, BucketStats \| None)` — batch health for renewal cron jobs. |
 | `CachedBytesStore` | `(inner, max_bytes=67108864)` | LRU by bytes; safe (immutable blobs); unknown attributes delegate to `inner`. |
 

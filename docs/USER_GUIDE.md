@@ -445,7 +445,10 @@ references. Requirements and behavior:
   swarmfs's `StampManager.plan(size, ttl)`/`buy(amount, depth)` and pass
   the returned id; batches below ~1 day of validity are rejected by the
   network, and a fresh purchase takes on the order of a minute to
-  become usable.
+  become usable. `"auto"` is resolved on the first write, not when the
+  store is made, so a store that only reads never asks for a batch: a
+  follower of someone else's feed (`swarm_store(topic, owner=...)`), or a
+  reader whose node is a public gateway, which serves no `/stamps`.
 - **A batch that is about to expire is not selected.** `"auto"` requires
   a day of remaining validity (`AUTO_MIN_BATCH_TTL`, overridable per
   store with `min_batch_ttl=`). swarmfs's own floor is 60 seconds, which

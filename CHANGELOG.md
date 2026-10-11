@@ -6,6 +6,17 @@ All notable changes to this project are documented here. The format is based on
 
 ## [Unreleased]
 
+### Fixed
+
+- **A store that only reads no longer asks for a postage batch.**
+  `BeeBytesStore` resolved `postage_batch_id="auto"` when it was made, so
+  a follower of someone else's feed (`swarm_store(topic, owner=...)`)
+  asked its node for `/stamps`, and through a public gateway, which serves
+  none, it could not open at all. `"auto"` is now resolved on the first
+  write, as swarmfs's `BeeRemote` does, and a follower's feed pointer gets
+  no batch. Found folding loopmarket's announced books through
+  `api.gateway.ethswarm.org`, which works with the fix.
+
 ## [0.22.2] — 2026-10-09
 
 ### Fixed
