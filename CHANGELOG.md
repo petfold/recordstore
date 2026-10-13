@@ -6,6 +6,8 @@ All notable changes to this project are documented here. The format is based on
 
 ## [Unreleased]
 
+## [0.23.0] — 2026-10-14
+
 ### Added
 
 - **`RecordStore.get_many(keys)`**: the records for several keys, read
