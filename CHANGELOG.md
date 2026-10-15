@@ -6,6 +6,8 @@ All notable changes to this project are documented here. The format is based on
 
 ## [Unreleased]
 
+## [0.24.0] — 2026-10-15
+
 ### Changed
 
 - **`BeeBytesStore` names the redundancy level on every upload**

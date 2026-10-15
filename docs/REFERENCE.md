@@ -7,7 +7,7 @@ Compact, definition-first, no narrative. The tutorial lives in the
 `tests/test_reference.py` — if a name or parameter in this file and the
 code disagree, the suite fails.
 
-Package version this file describes: `0.23.0`.
+Package version this file describes: `0.24.0`.
 
 ## 1. Vocabulary
 
@@ -118,12 +118,13 @@ provides. Blobs are immutable and content-addressed.
 | `MemoryBytesStore` | `()` | sha256 refs; forgets on exit. |
 | `DirBytesStore` | `(path, addressing="sha256")` | `addressing="swarm"` shares Swarm's address space (needs `[swarm-addressing]`). |
 | `FsspecBytesStore` | `(url, addressing="sha256", **storage_options)` | any fsspec filesystem; refuses Swarm URLs (path-addressed ≠ content-addressed). |
-| `BeeBytesStore` | `(api_url, postage_batch_id="auto", deferred_upload=True, max_concurrent_reads=32, min_batch_ttl=86400)` | Swarm refs; `"auto"` picks the usable batch with the longest TTL, on the first write (a store that only reads never asks). Reads are **not** verified — trust your own node (User Guide §7). |
+| `BeeBytesStore` | `(api_url, postage_batch_id="auto", deferred_upload=True, max_concurrent_reads=32, min_batch_ttl=86400)` | Swarm refs; every upload names its redundancy level (`swarmfs.redundancy_for`: 1 up to 4 KB, 0 above), so a ref is the `swarm` addressing's; `"auto"` picks the usable batch with the longest TTL, on the first write (a store that only reads never asks). Reads are **not** verified — trust your own node (User Guide §7). |
 | `BeeBytesStore.batch_status` | `(*, buckets=False)` | `(StampInfo, BucketStats \| None)` — batch health for renewal cron jobs. |
 | `CachedBytesStore` | `(inner, max_bytes=67108864)` | LRU by bytes; safe (immutable blobs); unknown attributes delegate to `inner`. |
 
-Addressing schemes: `sha256` (hex SHA-256) and `swarm` (Bee BMT reference,
-erasure coding off — equals what `POST /bytes` returns).
+Addressing schemes: `sha256` (hex SHA-256) and `swarm` (Bee BMT reference of
+the plain tree — equals what `POST /bytes` returns at the level
+`swarmfs.redundancy_for` names, which `BeeBytesStore` always sends).
 
 ## 6. Pointers
 

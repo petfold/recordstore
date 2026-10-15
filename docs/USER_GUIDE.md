@@ -677,9 +677,10 @@ backends interchangeable. Pass `addressing="swarm"` to name blobs by their Swarm
 reference instead (computed locally by `swarmfs.splitter`, no node needed): the
 directory then shares Swarm's address space, so you can build offline and
 publish later with nothing re-addressed. Note that roots are **not** comparable
-across the two schemes, and that a Bee node adding erasure coding returns a
-different root for the same bytes, so an offline mirror stays address-compatible
-only if you upload with redundancy disabled. Any `bytes -> str` callable also
+across the two schemes, and that a Bee node erasure-coding a blob over one chunk
+returns a different reference for the same bytes, so an offline mirror stays
+address-compatible only at the levels `swarmfs.redundancy_for` names (1 for a
+blob that fits one chunk, 0 above), which `BeeBytesStore` always sends. Any `bytes -> str` callable also
 works.
 
 - **`MemoryPointer(root=None)`** — in-process only; implements an atomic

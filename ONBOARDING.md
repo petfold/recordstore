@@ -69,9 +69,13 @@ ever committed (the reflog).
 
 ## Sharp edges (each cost us a real bug or design correction)
 
-- **Erasure coding forks the address space.** Local BMT refs equal the
-  node's only with redundancy off. Local-first modes force `redundancy=0`
-  and every push asserts the node returned the locally computed ref.
+- **Erasure coding forks the address space** for a blob over one chunk.
+  Local BMT refs equal the node's only at the levels `swarmfs.redundancy_for`
+  names: 1 for a blob that fits one chunk (its reference is unchanged and the
+  node keeps two copies), 0 above. Every local-first push and every
+  `BeeBytesStore` upload names that level (swarmfs 0.15.0, recordstore
+  0.24.0; ontodag's question 47), and every push asserts the node returned
+  the locally computed ref.
 - **Canonicity means revisits.** Equal content ⇒ equal root (recordstore
   trie *and* mantaray manifests) — returning to an earlier state re-uses
   its old root, which the append-only journal refuses to re-record. That's
@@ -137,8 +141,9 @@ ever committed (the reflog).
   CHANGELOG), commit, `git tag vX.Y.Z && git push origin main vX.Y.Z`.
   The tag triggers publish via PyPI trusted publishing after CI re-runs
   the tests.
-- **Dependency floors matter here**: `recordstore[local-first-swarm]` = swarmfs ≥ 0.9
-  (keccak in swarmfs's base since 0.9; its `[feeds]` extra is signing-only now);
+- **Dependency floors matter here**: `recordstore[bee]`, `[local-first-swarm]`
+  and `[swarm-only]` = swarmfs ≥ 0.15.0 (uploads name their redundancy level;
+  keccak in swarmfs's base since 0.9, its `[feeds]` extra signing-only);
   `recordstore[swarm-only]` bundles the direct-on-Swarm trio,
   `ontodag-fs` = swarmfs ≥ 0.11.1 (`mount(fs=..., rw=True)`; before that
   0.8 for `read_reference`/`reference_size`). swarmfs runtime needs only
