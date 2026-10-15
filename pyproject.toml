@@ -23,7 +23,8 @@ license = { text = "BSD-3-Clause" }
 [project.optional-dependencies]
 # Since 0.22 every route to Bee is swarmfs's (BeeBytesStore and
 # SwarmFeedPointer included); requests and swarm-bee are gone.
-bee = ["swarmfs>=0.13.0"]
+# 0.15.0: every upload names its redundancy level (swarmfs.redundancy_for).
+bee = ["swarmfs>=0.15.0"]
 fsspec = ["fsspec"]
 # postage_batch_id="auto", batch_status(), and the expiry/bucket warnings.
 # 0.4.0 is the floor: earlier swarmfs has no StampManager.list_batches or
@@ -37,12 +38,14 @@ stamps = ["swarmfs>=0.4.0"]
 # which read as "local storage" rather than local-FIRST-with-Swarm.
 # 0.11.2: the sync worker re-sends blobs the network lost and runs its
 # confirmation checks 32 at a time (they ran one at a time, ~1.2 s each).
-local-first-swarm = ["swarmfs>=0.11.2"]
+# 0.15.0: a push names the level that keeps the local reference, so a
+# blob over 4 KB can be pushed at all.
+local-first-swarm = ["swarmfs>=0.15.0"]
 # the whole store directly ON Swarm, no local layer — everything
 # swarm_store() needs (BeeBytesStore + SwarmFeedPointer + "auto" stamp
 # selection). The bundle downstreams used to hand-roll as
 # recordstore[bee,feeds,stamps].
-swarm-only = ["swarmfs[feeds]>=0.13.0"]
+swarm-only = ["swarmfs[feeds]>=0.15.0"]
 # plain swarmfs suffices since 0.9.0 (keccak in base; [feeds] is now
 # signing-only and irrelevant to addressing)
 swarm-addressing = ["swarmfs>=0.9.0"]

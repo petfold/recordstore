@@ -6,6 +6,18 @@ All notable changes to this project are documented here. The format is based on
 
 ## [Unreleased]
 
+### Changed
+
+- **`BeeBytesStore` names the redundancy level on every upload**
+  (`swarmfs.redundancy_for`): 1 while a blob fits one chunk, so Bee also
+  writes two copies of it and its reference is unchanged, and 0 above,
+  so a larger blob is not coded and its reference is the one
+  `addressing="swarm"` computes offline. It sent none, so Bee's default
+  (1) coded every blob over 4 KB under a reference only the node could
+  tell, and the same knowledge could reach two roots depending on who
+  wrote it. ontodag's question 47, decided by Peter 2026-10-15. Floors:
+  `swarmfs>=0.15.0` for `[bee]`, `[local-first-swarm]` and `[swarm-only]`.
+
 ## [0.23.0] — 2026-10-14
 
 ### Added

@@ -166,9 +166,10 @@ def _swarm_ref(data: bytes) -> Ref:
     builds the whole chunk tree.
 
     Caveat inherited from Swarm: this is the reference for a *plain* upload.
-    A Bee node that adds erasure coding (many default to it) returns a
-    different root for the same bytes, so an offline mirror only stays
-    address-compatible if you upload with redundancy disabled.
+    A blob over one chunk uploaded with erasure coding (Bee's default
+    level is 1) gets a different root, so an offline mirror stays
+    address-compatible only with the level `swarmfs.splitter.
+    redundancy_for` names, which `BeeBytesStore` always sends.
     """
     try:
         from swarmfs.splitter import content_address
@@ -476,6 +477,13 @@ class BeeBytesStore:
     else's feed, a reader through a public gateway, which serves no
     ``/stamps``) never asks for one.
 
+    Every upload names its redundancy level (`swarmfs.splitter.
+    redundancy_for`), never the node's default: 1 while a blob fits one
+    chunk (Bee writes two copies of it; its reference is the chunk's own),
+    0 above, so a reference is always the one Swarm's own rules give, the
+    same as `addressing="swarm"` computes offline. At Bee's default (1) a
+    larger blob was coded under a reference only the node could tell.
+
     The HTTP side is swarmfs's client (since 0.22; it was `requests`), so
     recordstore reaches Bee one way: `get_many`/`put_many` keep
     `max_concurrent_reads` requests in flight on swarmfs's event loop over
@@ -488,6 +496,7 @@ class BeeBytesStore:
         try:  # lazy: only needed for the real backend
             from fsspec.asyn import sync
             from swarmfs import SwarmClient, SyncSwarmClient
+            from swarmfs.splitter import redundancy_for
         except ImportError as e:  # pragma: no cover - only without the extra
             raise ImportError(
                 "BeeBytesStore talks to Bee through swarmfs; install it with: "
@@ -504,6 +513,7 @@ class BeeBytesStore:
         self.max_concurrent_reads = max(1, max_concurrent_reads)
         self._async = SwarmClient(self.api_url)
         self._client = SyncSwarmClient(client=self._async)
+        self._level = redundancy_for
         self._run = lambda fn, *a: sync(self._client.loop, fn, *a)
 
     @property
@@ -541,7 +551,8 @@ class BeeBytesStore:
         from swarmfs.exceptions import StampError
         try:
             return self._client.bytes_post(data, self.batch,
-                                           deferred=self.deferred)
+                                           deferred=self.deferred,
+                                           redundancy=self._level(len(data)))
         except StampError as e:
             raise self._refused(e) from e
 
@@ -590,7 +601,8 @@ class BeeBytesStore:
 
         async def post(data):
             return await self._async.bytes_post(data, self.batch,
-                                                deferred=self.deferred)
+                                                deferred=self.deferred,
+                                                redundancy=self._level(len(data)))
         try:
             return self._run(self._many, post, datas)
         except StampError as e:
