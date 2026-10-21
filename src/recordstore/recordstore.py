@@ -1530,6 +1530,71 @@ def verify_extension(proof, base: Optional[Ref], root: Optional[Ref]) -> Tuple[s
 
 
 # ---------------------------------------------------------------------------
+# Prefix proofs: every record under a prefix, and no others
+#
+# "Under this prefix, root R holds exactly these records" — what a reader
+# needs when an answer depends on the absence of records it cannot name in
+# advance (ontodag: everything filed under a term, when the term has no
+# record of its own). An inclusion proof says a key is there and an absence
+# proof that a named key is not; neither says that no other key exists. The
+# proof carries every trie node whose keys can meet the prefix and every
+# value blob under it. The verifier walks the trie from the root it trusts
+# over the carried nodes alone, indexed by their recomputed addresses: a
+# subtree left out is a node the walk needs and lacks, so the record set it
+# returns is complete. Its size is the size of the records under the prefix
+# ("" for the whole store). Format "recordstore-prefix-proof", version 1.
+# ---------------------------------------------------------------------------
+
+PREFIX_FORMAT = "recordstore-prefix-proof"
+
+
+def verify_prefix(proof, root: Optional[Ref]) -> Dict[str, Any]:
+    """Check `proof` against `root` (the reference the *verifier* trusts —
+    None for an empty store) and return {key: record} for every record
+    under the proof's prefix: all of them, proven complete. Raises
+    ``ProofError`` on any mismatch, including a node or value the walk needs
+    and the proof lacks. Pure: reads no store."""
+    if not isinstance(proof, dict) or proof.get("format") != PREFIX_FORMAT:
+        raise ProofError(f"not a {PREFIX_FORMAT} envelope")
+    if proof.get("version") != 1:
+        raise ProofError(f"unsupported proof version {proof.get('version')!r}")
+    if proof.get("root") != root:
+        raise ProofError(f"proof is about root {proof.get('root')!r}, not {root!r}")
+    prefix = proof.get("prefix")
+    if not isinstance(prefix, str):
+        raise ProofError("proof carries no prefix")
+    ref_of = _resolve_addressing(proof.get("addressing"))
+    nodes: Dict[Ref, bytes] = {}
+    values: Dict[Ref, bytes] = {}
+    try:
+        for field, into in (("nodes", nodes), ("values", values)):
+            for blob_hex in proof.get(field, []):
+                blob = bytes.fromhex(blob_hex)
+                into[ref_of(blob)] = blob
+    except (TypeError, ValueError):
+        raise ProofError("malformed bytes in proof") from None
+
+    def load(ref: Ref) -> _Node:
+        blob = nodes.get(ref)
+        if blob is None:
+            raise ProofError(f"the proof lacks node {ref}")
+        try:
+            return _Trie._decode(blob)
+        except (ValueError, KeyError):
+            raise ProofError(f"node {ref} is not a valid trie node") from None
+
+    out: Dict[str, Any] = {}
+    if root is None:
+        return out                            # the empty store holds nothing
+    for key, value_ref, _ in _items_under(load, load(root), b"", prefix.encode("utf-8")):
+        blob = values.get(value_ref)
+        if blob is None:
+            raise ProofError(f"the proof lacks the value of {key.decode('utf-8', 'replace')!r}")
+        out[key.decode("utf-8")] = _decode_value(blob)
+    return out
+
+
+# ---------------------------------------------------------------------------
 # Pointers ("latest root")
 # ---------------------------------------------------------------------------
 
@@ -2343,6 +2408,45 @@ class RecordStore:
             "value": value_hex,
         }
         verify_proof(proof, self._root)   # never hand out a broken proof
+        return proof
+
+    def prove_prefix(self, prefix: str = "", addressing: Optional[str] = None) -> dict:
+        """A verifiable proof of every record under `prefix` ("" for the
+        whole store) in the committed root, and of no others: the raw trie
+        nodes whose keys can meet the prefix and the value blobs under it.
+        ``verify_prefix(proof, root)`` returns the complete {key: record}
+        with no store access. Its size is the size of what is under the
+        prefix. Refuses when a key under the prefix has staged changes;
+        self-verified before being returned, as `prove` is."""
+        if not isinstance(prefix, str):
+            raise TypeError("prefix is a string ('' for every key)")
+        staged = sorted(k for k in self._staged if k.startswith(prefix))
+        if staged:
+            raise ValueError(f"{staged[0]!r} has staged, uncommitted changes under the "
+                             "prefix — commit() first")
+        name = addressing or _addressing_name(self._blobs)
+        nodes: Dict[Ref, str] = {}
+        values: Dict[Ref, str] = {}
+
+        def load(ref: Ref) -> _Node:
+            blob = self._blobs.get(ref)       # the exact bytes behind the ref
+            nodes[ref] = blob.hex()
+            return _Trie._decode(blob)
+
+        if self._root is not None:
+            for _key, value_ref, _ in _items_under(load, load(self._root), b"",
+                                                   prefix.encode("utf-8")):
+                values[value_ref] = self._blobs.get(value_ref).hex()
+        proof = {
+            "format": PREFIX_FORMAT,
+            "version": 1,
+            "addressing": name,
+            "root": self._root,
+            "prefix": prefix,
+            "nodes": sorted(nodes.values()),
+            "values": sorted(values.values()),
+        }
+        verify_prefix(proof, self._root)      # never hand out a broken proof
         return proof
 
     def extends(self, base: Optional[Ref], prefixes: Iterable[str] = ("",)) -> bool:

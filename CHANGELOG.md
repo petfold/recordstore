@@ -6,6 +6,17 @@ All notable changes to this project are documented here. The format is based on
 
 ## [Unreleased]
 
+### Added
+
+- **Prefix proofs**: `RecordStore.prove_prefix(prefix="")` and
+  `verify_prefix(proof, root)`, format `recordstore-prefix-proof`. Every
+  record under a prefix and no others, proven complete: the envelope
+  carries every trie node whose keys can meet the prefix and the value
+  blobs under it, and the verifier's walk from the trusted root needs every
+  one of them. `""` proves the whole store. For ontodag's `is_below`
+  certificates once a term has no record of its own (an answer about
+  `in(japan)` depends on every record filed under it).
+
 ## [0.24.0] — 2026-10-15
 
 ### Changed

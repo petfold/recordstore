@@ -322,6 +322,26 @@ Details worth knowing:
   the bytes store's endpoint completely (see §7): `verify_proof` checks
   every byte it returns, `store.get` checks nothing.
 
+### Proving every record under a prefix (unreleased)
+
+```python
+from recordstore import verify_prefix
+
+proof = store.prove_prefix("in(")      # against the committed root; "" for all
+verify_prefix(proof, root)             # pure: -> {key: record, ...}, complete
+```
+
+An inclusion proof says a key is there, an absence proof that a named key
+is not; neither says that no *other* key exists. A **prefix proof** does:
+it carries every trie node whose keys can meet the prefix and every value
+blob under it, and `verify_prefix` walks the trie from the root it trusts
+over those nodes alone, indexed by their recomputed references. A subtree
+left out is a node the walk needs and lacks, so `ProofError`, never a
+shorter answer. It is what a reader needs when an answer depends on records
+it cannot name in advance (ontodag certifies an answer about a term that
+has no record of its own this way). Its size is the size of the records
+under the prefix: for `""`, the whole store.
+
 ### Proving that a later root extends an earlier one (0.21.0)
 
 ```python

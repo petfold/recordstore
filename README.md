@@ -90,6 +90,11 @@ and nothing more:
   old_root, new_root)` checks it with no store access. The proof carries only
   the nodes along what changed — what an append-only keyspace (a register's
   revocations, a book's tombstones) promises, made checkable.
+- **Prefix proofs** — `store.prove_prefix("in(")` proves every record under
+  a prefix and no others (`""`: the whole store); `verify_prefix(proof,
+  root)` returns them with no store access. For an answer that depends on
+  records a reader cannot name in advance; its size is the size of what is
+  under the prefix.
 - **A verifiable sequence of roots** — `pointer.update(i)` returns a Swarm
   feed's update at index `i` as the raw owner-signed chunk;
   `verify_feed_update(update, owner, topic)` checks it offline, and two

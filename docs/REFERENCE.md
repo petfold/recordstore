@@ -71,6 +71,8 @@ Everything importable from `recordstore` (exactly `__all__`):
 | `PROOF_FORMAT` | proof envelope format name (`"recordstore-trie-proof"`) |
 | `verify_extension` | check that a later root keeps an earlier root's records under prefixes — no store |
 | `EXTENSION_FORMAT` | extension-proof envelope format name (`"recordstore-extension-proof"`) |
+| `verify_prefix` | every record under a prefix, proven complete — no store |
+| `PREFIX_FORMAT` | prefix-proof envelope format name (`"recordstore-prefix-proof"`) |
 | `verify_feed_update` | check an owner-signed feed update envelope offline → `FeedUpdate` |
 | `verify_equivocation` | two different roots signed at one feed index → the index (a proof of equivocation) |
 | `FeedUpdate` | `(index, root, timestamp)` of a verified feed update |
@@ -95,6 +97,7 @@ Everything importable from `recordstore` (exactly `__all__`):
 | `RecordStore.prove` | `(key, addressing=None)` | inclusion-or-absence proof dict for a committed key. `ValueError` on staged keys or unknown addressing. |
 | `RecordStore.extends` | `(base, prefixes=("",))` | `bool`: the committed root holds, under each prefix, every record `base` held, unchanged (additions allowed). O(what changed under the prefixes). |
 | `RecordStore.prove_extension` | `(base, prefixes=("",), addressing=None)` | extension proof dict: the committed root extends `base` under the prefixes. `ValueError` naming the key when it does not, or on staged keys under the prefixes. |
+| `RecordStore.prove_prefix` | `(prefix="", addressing=None)` | prefix proof dict: every record under `prefix` ("" for the whole store) and no others. `ValueError` on staged keys under the prefix. |
 | `RecordStore.root` | property | root of the last committed state. |
 | `RecordStore.history` | `(limit=None)` | the states this store has been in, newest first, as `Version`s. `[]` when the pointer keeps no timeline. |
 | `RecordStore.undo` | `()` | step back one state; `None` at the start of the line. Moves the pointer, drops staged changes, destroys nothing. |
@@ -168,6 +171,9 @@ directory (flock, POSIX).
 | `RecordStore.prove_extension` | `(base, prefixes=("",), addressing=None)` | JSON-ready envelope `{format, version, addressing, base, root, prefixes, nodes}` carrying the raw node blobs of both roots along what changed under the prefixes; self-verified before return. |
 | `verify_extension` | `(proof, base, root)` | pure function: returns the proven prefixes when `root` holds every record `base` held under them with the same value; raises `ProofError` on a record missing or changed, a node the walk needs and the proof lacks, or any envelope mismatch. |
 | `EXTENSION_FORMAT` | constant | `"recordstore-extension-proof"`, version 1. |
+| `RecordStore.prove_prefix` | `(prefix="", addressing=None)` | JSON-ready envelope `{format, version, addressing, root, prefix, nodes, values}` carrying every trie node whose keys can meet the prefix and every value blob under it; self-verified before return. |
+| `verify_prefix` | `(proof, root)` | pure function: returns `{key: record}` for every record under the prefix, complete because the walk from `root` needs every carried node; raises `ProofError` on a node or value the walk needs and the proof lacks, or any envelope mismatch. |
+| `PREFIX_FORMAT` | constant | `"recordstore-prefix-proof"`, version 1. |
 | `SwarmFeedPointer.owner` | property | the feed owner's 20-byte address, hex (no `0x`); `.topic` the 32-byte topic, hex. |
 | `SwarmFeedPointer.update` | `(index)` | the feed's update at `index` as an envelope `{format, version, owner, topic, index, soc}` carrying the raw owner-signed single-owner chunk. |
 | `SwarmFeedPointer.updates` | `(start=0, stop=None)` | the updates from `start` up to `stop` (default: past the probed tip), in index order — the owner-signed sequence of the store's published roots. |
