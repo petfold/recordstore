@@ -322,7 +322,7 @@ Details worth knowing:
   the bytes store's endpoint completely (see §7): `verify_proof` checks
   every byte it returns, `store.get` checks nothing.
 
-### Proving every record under a prefix (unreleased)
+### Proving every record under a prefix (0.25.0)
 
 ```python
 from recordstore import verify_prefix

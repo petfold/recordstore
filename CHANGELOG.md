@@ -6,6 +6,8 @@ All notable changes to this project are documented here. The format is based on
 
 ## [Unreleased]
 
+## [0.25.0] — 2026-10-25
+
 ### Added
 
 - **Prefix proofs**: `RecordStore.prove_prefix(prefix="")` and
