@@ -561,7 +561,7 @@ Because chunks are immutable and content-addressed, mixing backends is
 safe in one direction: anything written through one `BeeBytesStore` is
 readable through any other Bee node that can retrieve the chunks.
 
-### Moving a store onto another batch (unreleased)
+### Moving a store onto another batch (0.26.0)
 
 A store lasts as long as the batch that stamped its blobs. Topping up
 extends that batch; moving the store onto another one (a fresh batch, or

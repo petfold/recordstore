@@ -7,7 +7,7 @@ Compact, definition-first, no narrative. The tutorial lives in the
 `tests/test_reference.py` — if a name or parameter in this file and the
 code disagree, the suite fails.
 
-Package version this file describes: `0.25.0`.
+Package version this file describes: `0.26.0`.
 
 ## 1. Vocabulary
 

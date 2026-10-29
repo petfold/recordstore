@@ -6,6 +6,8 @@ All notable changes to this project are documented here. The format is based on
 
 ## [Unreleased]
 
+## [0.26.0] — 2026-10-29
+
 ### Added
 
 - **`python3 -m recordstore refs ROOT...`**: every blob a store needs at
