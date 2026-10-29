@@ -98,6 +98,7 @@ Everything importable from `recordstore` (exactly `__all__`):
 | `RecordStore.extends` | `(base, prefixes=("",))` | `bool`: the committed root holds, under each prefix, every record `base` held, unchanged (additions allowed). O(what changed under the prefixes). |
 | `RecordStore.prove_extension` | `(base, prefixes=("",), addressing=None)` | extension proof dict: the committed root extends `base` under the prefixes. `ValueError` naming the key when it does not, or on staged keys under the prefixes. |
 | `RecordStore.prove_prefix` | `(prefix="", addressing=None)` | prefix proof dict: every record under `prefix` ("" for the whole store) and no others. `ValueError` on staged keys under the prefix. |
+| `RecordStore.refs_under` | `(prefix="")` | `("node", ref)` / `("value", ref)` for every blob needed to read the keys under `prefix` in the committed root, the root's node first; a blob reached on two paths comes once for each. Reads trie nodes, not records. `python3 -m recordstore refs ROOT...` prints them as `ref <hex>`, each once, for a keeper (swarm-keep). |
 | `RecordStore.root` | property | root of the last committed state. |
 | `RecordStore.history` | `(limit=None)` | the states this store has been in, newest first, as `Version`s. `[]` when the pointer keeps no timeline. |
 | `RecordStore.undo` | `()` | step back one state; `None` at the start of the line. Moves the pointer, drops staged changes, destroys nothing. |

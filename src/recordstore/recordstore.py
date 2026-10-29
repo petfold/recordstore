@@ -2449,6 +2449,18 @@ class RecordStore:
         verify_prefix(proof, self._root)      # never hand out a broken proof
         return proof
 
+    def refs_under(self, prefix: str = "") -> Iterator[Tuple[str, Ref]]:
+        """``("node", ref)`` and ``("value", ref)`` for every blob needed to
+        read the keys under `prefix` ("" for the whole store) in the
+        committed root, the root's own node first: what has to stay stored
+        for those records to stay readable. A blob reached on two paths
+        comes once for each. On Swarm this is what a keeper re-stamps
+        (``python3 -m recordstore refs``), since a node walking a
+        reference sees one blob, not the trie inside it."""
+        if not isinstance(prefix, str):
+            raise TypeError("prefix is a string ('' for every key)")
+        return self._trie.refs_under(self._root, prefix.encode("utf-8"))
+
     def extends(self, base: Optional[Ref], prefixes: Iterable[str] = ("",)) -> bool:
         """Does the committed root hold, under each of `prefixes`, every
         record `base` held, unchanged (additions allowed)? The local check
@@ -3021,11 +3033,6 @@ class LocalFirstRecordStore(RecordStore):
 
     # -- working-set controls (R2) --------------------------------------------
 
-    def _refs_under(self, prefix: str):
-        return self._trie.refs_under(self._root,
-                                     prefix.encode("utf-8") if prefix
-                                     else b"")
-
     def pin(self, name: str, prefix: str = "") -> int:
         """Hold every blob needed to read the keys under `prefix` — trie
         nodes and values — against eviction, as named pin `name` ("always
@@ -3033,7 +3040,7 @@ class LocalFirstRecordStore(RecordStore):
         subtree; re-pin after commits to track new data (a repeated name
         replaces the earlier pin). Returns the number of pinned blobs;
         `unpin(name)` releases them."""
-        refs = [ref for _, ref in self._refs_under(prefix)]
+        refs = [ref for _, ref in self.refs_under(prefix)]
         self.local.pin(name, refs)
         return len(refs)
 
@@ -3048,7 +3055,7 @@ class LocalFirstRecordStore(RecordStore):
         back from Swarm; raises `RecordUnavailable`-adjacent errors from
         the backend if the network is down."""
         healed = 0
-        for _, ref in self._refs_under(prefix):
+        for _, ref in self.refs_under(prefix):
             if not self.local.has_local(ref):
                 self.local.get(ref)  # verified re-fetch via the fetcher
                 healed += 1
@@ -3107,7 +3114,7 @@ class LocalFirstRecordStore(RecordStore):
                 "history squashing needs swarmfs >= 0.6 "
                 '(pip install -U "recordstore[local-first-swarm]")')
         nodes, blobs = set(), set()
-        for kind, ref in self._refs_under(""):
+        for kind, ref in self.refs_under(""):
             blobs.add(ref)
             if kind == "node":
                 nodes.add(ref)

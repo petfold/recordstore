@@ -269,7 +269,7 @@ def test_fetch_warms_a_subtree(tmp_path):
         store.local.evict(10**9)
         healed = store.fetch("trip/")        # offline-capable for trip/
         assert healed > 0
-        for _, ref in store._refs_under("trip/"):
+        for _, ref in store.refs_under("trip/"):
             assert store.local.has_local(ref)
         assert store.fetch("trip/") == 0     # idempotent: already warm
     finally:
@@ -400,7 +400,7 @@ def test_squash_of_unpushed_history_then_push(tmp_path):
         remote.fail = False
         store.sync(timeout=WAIT)
         assert store.local.network_confirmed(store.root)
-        reachable = {ref for _, ref in store._refs_under("")}
+        reachable = {ref for _, ref in store.refs_under("")}
         assert set(remote.blobs) == reachable  # tip only, no dropped revs
         assert store.get("doc")["rev"] == 3
     finally:

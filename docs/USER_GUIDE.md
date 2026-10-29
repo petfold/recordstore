@@ -561,6 +561,36 @@ Because chunks are immutable and content-addressed, mixing backends is
 safe in one direction: anything written through one `BeeBytesStore` is
 readable through any other Bee node that can retrieve the chunks.
 
+### Moving a store onto another batch (unreleased)
+
+A store lasts as long as the batch that stamped its blobs. Topping up
+extends that batch; moving the store onto another one (a fresh batch, or
+the one that keeps everything you keep) means stamping every blob again,
+and a Bee node cannot find them by itself: `PUT /stewardship/{ref}` walks
+one blob's chunk tree and does not see the trie inside it. The store lists
+them:
+
+```bash
+python3 -m recordstore refs <root> [<root> ...]   # "ref <hex>" per blob, each once, roots first
+```
+
+`RecordStore.refs_under(prefix="")` is the same walk in Python. The lines
+are entries for [swarm-keep](https://github.com/petfold/swarm-keep), which
+re-stamps them onto a batch, checks they are retrievable and warns before
+a batch runs out. A keep-list item for a store behind a feed:
+
+```json
+{"name": "my notes", "redundancy": 1,
+ "feed": {"owner": "<address>", "topic_string": "my-notes"},
+ "walk": ["python3", "-m", "recordstore", "refs", "{ref}"]}
+```
+
+swarm-keep keeps every update of the feed and runs the walk for the roots
+of its latest versions (two by default). `redundancy` is 1 because
+`BeeBytesStore` uploads every blob that fits one chunk at level 1. The
+command reads from `$SWARM_KEEP_BEE_URL`, which swarm-keep sets to the node
+it asks, else `http://localhost:1633`; `--api` names another node.
+
 ---
 
 ## 4. Pointers

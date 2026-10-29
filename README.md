@@ -240,7 +240,7 @@ loopmarket's register sequence, R5). Extracted from
 preserved; validated against a live Bee 2.8.2 light node on Gnosis mainnet
 (roundtrips, canonical roots on real BMT references, network retrievability,
 and since 0.21.0 three roots published on a feed and their signed sequence
-verified offline) — CI collects **214 tests** offline (the live-node tests
+verified offline) — CI collects **220 tests** offline (the live-node tests
 skip there; `tests/test_local_first.py`'s 18 more need `swarmfs`), and with
 `BEE_API` set and every extra installed the whole suite of 226, live tests
 included, is **225 passed / 1 skipped** (the count check only CI enforces).

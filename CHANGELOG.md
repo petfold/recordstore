@@ -6,6 +6,18 @@ All notable changes to this project are documented here. The format is based on
 
 ## [Unreleased]
 
+### Added
+
+- **`python3 -m recordstore refs ROOT...`**: every blob a store needs at
+  the given roots, one `ref <hex>` line each, each once, the roots first,
+  read from `$SWARM_KEEP_BEE_URL` (else `http://localhost:1633`, or
+  `--api`). These are swarm-keep's entries: a keep-list item with
+  `"walk": ["python3", "-m", "recordstore", "refs", "{ref}"]` keeps a store
+  alive across postage batches, since a node re-stamping a reference with
+  `PUT /stewardship` sees one blob, not the trie inside it.
+- **`RecordStore.refs_under(prefix="")`**, the same walk in Python (it was
+  `LocalFirstRecordStore`'s private `_refs_under`).
+
 ## [0.25.0] — 2026-10-25
 
 ### Added
