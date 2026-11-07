@@ -196,6 +196,9 @@ store = swarm_store("my-notes", owner=addr)   # follow someone else's feed
 - **[Reference](docs/REFERENCE.md)** — compact and definition-first: every
   export, signature, error, and extra in tables, pinned against the code
   by `tests/test_reference.py`. The right document to hand to an AI agent.
+- **[JavaScript port](js/README.md)** — early: the same store for Node and
+  browsers (including Freedom Browser's `window.swarm`), wire-compatible
+  with this package and tested against fixtures it generates.
 
 ## Testing
 
