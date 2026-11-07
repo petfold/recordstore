@@ -22,6 +22,38 @@ jobs:
       # skip themselves — this runs the offline suite only.
       - run: pytest
 
+  # The JavaScript port (js/): its tests replay fixtures that the Python
+  # implementation generated and must reach the same bytes and roots. No
+  # npm install: the package has no dependencies. Node 22 is the floor
+  # (exact large integers need JSON.parse's source-text access).
+  js:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        node-version: ["22", "24"]
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
+        with:
+          node-version: ${{ matrix.node-version }}
+      - run: npm test
+        working-directory: js
+
+  # The fixtures above must be what the Python code in src/ produces today:
+  # a change to the wire format that leaves them stale fails here, until
+  # `python3 js/tools/make_fixtures.py` is rerun. The bee extra brings
+  # swarmfs, whose keccak the Swarm-addressed fixtures need.
+  js-fixtures:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+      - run: pip install -e ".[bee]"
+      - run: python3 js/tools/make_fixtures.py --check
+
   # Unused and shadowed names (review 2026-10, question 9): in loopmarket a
   # second definition of a function silently replaced the first and changed
   # what users approve; pyflakes names that line. Pinned, so a new pyflakes
