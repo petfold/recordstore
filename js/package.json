@@ -1,0 +1,41 @@
+{
+  "name": "recordstore",
+  "version": "0.1.0",
+  "private": true,
+  "description": "A versioned key -> record store over content-addressed storage such as Ethereum Swarm; wire-compatible JavaScript port of the Python recordstore",
+  "type": "module",
+  "main": "src/index.js",
+  "exports": {
+    ".": "./src/index.js"
+  },
+  "files": [
+    "src",
+    "vendor"
+  ],
+  "engines": {
+    "node": ">=22"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/petfold/recordstore.git",
+    "directory": "js"
+  },
+  "homepage": "https://github.com/petfold/recordstore/tree/main/js#readme",
+  "keywords": [
+    "swarm",
+    "ethswarm",
+    "key-value",
+    "content-addressed",
+    "merkle",
+    "trie",
+    "versioned",
+    "decentralized"
+  ],
+  "license": "BSD-3-Clause",
+  "author": "Peter Foldiak",
+  "scripts": {
+    "test": "node --test test/*.test.js",
+    "fixtures": "python3 tools/make_fixtures.py",
+    "fixtures:check": "python3 tools/make_fixtures.py --check"
+  }
+}

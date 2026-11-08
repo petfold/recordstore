@@ -1,0 +1,26 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>recordstore: window.swarm check</title>
+<style>
+  body { font: 15px/1.5 system-ui, sans-serif; margin: 2rem; max-width: 52rem; }
+  pre { background: #f4f4f4; padding: 1rem; overflow-x: auto; white-space: pre-wrap; }
+  button { font: inherit; margin-right: .5rem; }
+</style>
+</head>
+<body>
+<h1>recordstore through <code>window.swarm</code></h1>
+<p>Reads a store Python published, then writes a small store through Freedom's
+provider and checks its root against the one computed offline.
+Run it in Freedom Browser; <code>test/freedom/freedom_check.cjs</code> drives it.</p>
+<p>
+  <button id="read">Read</button>
+  <button id="write">Write (uses your stamps)</button>
+</p>
+<p id="status">loading…</p>
+<pre id="out"></pre>
+<script type="module" src="./provider-check.js"></script>
+</body>
+</html>
