@@ -73,10 +73,26 @@ const blobs = new SwarmProviderBytesStore(window.swarm);
 
 Reads use `swarm_readData` and count against Freedom's per-site read budget.
 Writes split each blob into chunks as Bee does and publish them with
-`swarm_publishChunk`, so the references are Bee's and Python's; the first
-write asks for access. **Not yet tried in Freedom.** Expect writes to be slow
-there: one call per chunk, several seconds each through Ant in swarmtyp's
-measurements.
+`swarm_publishChunk`, so the references are Bee's and Python's. The first
+write asks for access, and the store's first chunk goes out alone: Freedom
+asks before each publish until the user ticks "Always allow this site", so
+one approval then covers the rest of a commit (chunks sent in parallel from
+the start each waited on a prompt: five for one commit).
+
+Checked in Freedom built from main (0.8.9-dev) on 8 November 2026 with
+`test/freedom/freedom_check.cjs`, which runs `test/freedom/provider-check.html`
+in a throwaway profile and answers Freedom's prompts:
+
+| | Freedom's node | Result |
+|---|---|---|
+| Read: 2 records and the 11 keys under a prefix of OntoDAG's `space` pack | its own Ant, just started | 65 reads, 13.5 s, one retry while the node found peers |
+| The same read | Swarm Desktop's Bee | 0.4 s |
+| Write a 3-record store (9 chunks, one over 4 KB), then read it back | Swarm Desktop's Bee | the root computed offline, read back equal; 3.1 s, one connect and one publish prompt |
+| The same write | its own Ant, no postage batch | refused with `node-not-ready` (4900); the commit failed and left the root as it was |
+
+Writing through Freedom's own Ant node is not tested yet: its node needs a
+funded wallet and a postage batch. Expect writes there to be slower: one
+call per chunk, several seconds each through Ant in swarmtyp's measurements.
 
 ## The API
 
@@ -135,6 +151,10 @@ string escapes, Python's float formatting. Where the languages differ:
 ```sh
 npm test                                            # Node's own runner, no install
 RECORDSTORE_BEE_URL=http://localhost:1633 npm test  # also read a live store
+
+# in real Freedom Browser, from a freedom-browser checkout beside this repo
+node test/freedom/freedom_check.cjs                 # read through Freedom's own node
+node test/freedom/freedom_check.cjs --bee=http://127.0.0.1:1633 --write   # spends stamps
 ```
 
 `test/fixtures/` is written by `tools/make_fixtures.py`, which runs the Python

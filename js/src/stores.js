@@ -187,19 +187,36 @@ export class SwarmProviderBytesStore {
 
   async put(data) {
     if (data.length === 0) throw new RangeError('the provider publishes chunks of 1 to 4096 bytes; an empty blob cannot be written');
-    this._access ??= this.provider.request({ method: 'swarm_requestAccess' });
+    // A refused or failed request is not remembered: the next write asks again.
+    this._access ??= this.provider.request({ method: 'swarm_requestAccess' })
+      .catch((e) => { this._access = null; throw e; });
     await this._access;
     const { root, chunks } = splitData(data);
-    await pool(chunks, this.concurrency, async ({ address, payload, span }) => {
-      const { reference } = await this.provider.request({
-        method: 'swarm_publishChunk',
-        params: span === payload.length ? { data: payload } : { data: payload, span },
-      });
-      if (reference !== address) {
-        throw new VerificationError(`the provider published a chunk as ${reference}, expected ${address}`);
-      }
-    });
+    let rest = chunks;
+    if (!this._primed) {
+      // The store's first chunk goes out alone. Freedom asks before each
+      // publish until the user ticks "Always allow this site"; requests sent
+      // in parallel would each be waiting on a prompt before that answer
+      // lands (five prompts for one commit in the first trial). The rest
+      // wait for this one, then run in parallel.
+      this._primed = this._publishChunk(chunks[0]).catch((e) => { this._primed = null; throw e; });
+      await this._primed;
+      rest = chunks.slice(1);
+    } else {
+      await this._primed;
+    }
+    await pool(rest, this.concurrency, (chunk) => this._publishChunk(chunk));
     return root;
+  }
+
+  async _publishChunk({ address, payload, span }) {
+    const { reference } = await this.provider.request({
+      method: 'swarm_publishChunk',
+      params: span === payload.length ? { data: payload } : { data: payload, span },
+    });
+    if (reference !== address) {
+      throw new VerificationError(`the provider published a chunk as ${reference}, expected ${address}`);
+    }
   }
 
   async getMany(refs) {
