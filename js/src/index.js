@@ -14,3 +14,8 @@ export {
   swarmRef, sha256Ref, splitData, chunkAddress, bmtRoot, redundancyFor, CHUNK_SIZE,
 } from './address.js';
 export { DEFAULT_NODE_CACHE_SIZE } from './trie.js';
+export {
+  SwarmFeedPointer, BeeFeedTransport, ProviderFeedTransport, FeedTransportError, ProofError,
+  verifyFeedUpdate, verifyEquivocation, FEED_UPDATE_FORMAT, topicOf, feedIdentifier, socAddress, addressOf,
+} from './feeds.js';
+export { swarmStore } from './swarm.js';

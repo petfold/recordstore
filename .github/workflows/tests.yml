@@ -42,8 +42,9 @@ jobs:
 
   # The fixtures above must be what the Python code in src/ produces today:
   # a change to the wire format that leaves them stale fails here, until
-  # `python3 js/tools/make_fixtures.py` is rerun. The bee extra brings
-  # swarmfs, whose keccak the Swarm-addressed fixtures need.
+  # `python3 js/tools/make_fixtures.py` is rerun. The bee and feeds extras
+  # bring swarmfs with keccak and signing (coincurve): the Swarm-addressed
+  # fixtures need the one, the signed feed updates the other.
   js-fixtures:
     runs-on: ubuntu-latest
     steps:
@@ -51,7 +52,7 @@ jobs:
       - uses: actions/setup-python@v6
         with:
           python-version: "3.12"
-      - run: pip install -e ".[bee]"
+      - run: pip install -e ".[bee,feeds]"
       - run: python3 js/tools/make_fixtures.py --check
 
   # Unused and shadowed names (review 2026-10, question 9): in loopmarket a

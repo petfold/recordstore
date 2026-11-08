@@ -9,7 +9,9 @@
 // Both resolve to a plain object (also kept in window.rsCheck.results) and
 // never throw: an error comes back as {error, reason}.
 
-import { MemoryBytesStore, RecordStore, SwarmProviderBytesStore, canonicalJson } from '../../src/index.js';
+import {
+  MemoryBytesStore, ProviderFeedTransport, RecordStore, SwarmFeedPointer, SwarmProviderBytesStore, canonicalJson,
+} from '../../src/index.js';
 
 const SPACE_PACK = '67f6be2688e5fb7ca85a463c3d2929dad2b177bb3edb6bb910e8fa110598cff3';
 const $ = (id) => document.getElementById(id);
@@ -61,6 +63,24 @@ async function read(root = SPACE_PACK, prefix = 'ab', keys = ['abbey', 'abalone'
   }
 }
 
+/** Follow a store Python keeps behind a feed (loopmarket's test maker book), all through window.swarm. */
+async function feed(topic = 'loop-twonode-1791730596', owner = '300f4daa2653102abde4c66f75ea512c0bb81571') {
+  $('status').textContent = 'following a feed…';
+  const provider = counting(window.swarm);
+  const started = performance.now();
+  try {
+    const pointer = new SwarmFeedPointer(new ProviderFeedTransport(provider), topic, { owner });
+    const store = await RecordStore.open(new SwarmProviderBytesStore(provider), { pointer });
+    const keys = await collect(store.keys());
+    return show('feed', {
+      topic, owner, root: store.root, records: keys.length, firstKeys: keys.slice(0, 3),
+      ms: Math.round(performance.now() - started), calls: provider.calls,
+    });
+  } catch (e) {
+    return show('feed', { ...failure(e), ms: Math.round(performance.now() - started), calls: provider.calls });
+  }
+}
+
 const RECORDS = () => ({
   'check/small': { hello: 'Freedom', at: new Date().toISOString().slice(0, 10) },
   'check/unicode/é😀': ['é', '中文', '😀'],
@@ -101,6 +121,7 @@ window.rsCheck = {
   results: {},
   provider: Boolean(window.swarm && window.swarm.isFreedomBrowser),
   read,
+  feed,
   write,
   ready: true,
 };

@@ -113,6 +113,7 @@ async function main() {
       out.readRetries = (out.readRetries || 0) + 1;
       await sleep(15_000);
     }
+    out.feed = await inPage(window, 'window.rsCheck.feed()');
     await window.screenshot({ path: path.join(tmp, 'read.png') });
 
     if (doWrite) {

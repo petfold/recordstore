@@ -332,6 +332,104 @@ def _op_json(op):
 
 
 # ---------------------------------------------------------------------------
+# Feeds: topics, owners, addresses, signed updates (needs swarmfs[feeds])
+# ---------------------------------------------------------------------------
+
+KEYS = ["11" * 32, "a7" * 31 + "01"]
+TOPIC_NAMES = ["recordstore/test", "loop-twonode-1791730596", "ab" * 32, "é😀"]
+
+
+def pointer_for(name, key):
+    """The Python pointer, for how it hashes topics and derives owners (no
+    network is touched until it is used)."""
+    from recordstore import SwarmFeedPointer
+    return SwarmFeedPointer("http://127.0.0.1:9", name, signer=key)
+
+
+def signed_update(key, topic_hex, index, root, timestamp):
+    """A feed update exactly as swarmfs's FeedOps.update publishes it (its
+    own code, with the clock fixed and the upload captured)."""
+    import asyncio
+    from unittest import mock
+    from swarmfs.feeds import FeedOps, FeedSigner, feed_identifier, soc_address
+
+    captured = {}
+
+    class Capture:
+        async def soc_post(self, owner, identifier, signature, data, stamp):
+            captured.update(owner=owner, identifier=identifier,
+                            signature=signature, data=bytes(data))
+            return "00" * 32
+
+    signer = FeedSigner(key)
+    with mock.patch("swarmfs.feeds.time.time", return_value=float(timestamp)):
+        asyncio.run(FeedOps(Capture()).update(
+            signer, bytes.fromhex(topic_hex), index, root, "00" * 32))
+    identifier = bytes.fromhex(captured["identifier"])
+    soc = identifier + bytes.fromhex(captured["signature"]) + captured["data"]
+    return {
+        "key": key, "topic": topic_hex, "index": index, "root": root,
+        "timestamp": timestamp,
+        "identifier": captured["identifier"],
+        "address": soc_address(feed_identifier(bytes.fromhex(topic_hex), index),
+                               signer.owner).hex(),
+        "soc": soc.hex(),
+    }
+
+
+def feed_cases():
+    from recordstore import FEED_UPDATE_FORMAT, ProofError, verify_equivocation, verify_feed_update
+    from swarmfs.feeds import feed_identifier, soc_address
+
+    owners = [{"key": k, "owner": pointer_for("x", k).owner} for k in KEYS]
+    topics = [{"name": n, "topic": pointer_for(n, KEYS[0]).topic} for n in TOPIC_NAMES]
+    t0 = topics[0]["topic"]
+    owner0 = bytes.fromhex(owners[0]["owner"])
+    addresses = []
+    for index in (0, 1, 255, 2**32 + 5):
+        ident = feed_identifier(bytes.fromhex(t0), index)
+        addresses.append({"topic": t0, "owner": owners[0]["owner"], "index": index,
+                          "identifier": ident.hex(),
+                          "address": soc_address(ident, owner0).hex()})
+
+    root_a = "5a" * 32
+    root_b = "c3" * 32
+    root_64 = "77" * 64  # an encrypted reference: 64 bytes
+    updates = [signed_update(KEYS[0], t0, 0, root_a, 1_790_000_000),
+               signed_update(KEYS[0], t0, 7, root_b, 1_790_000_123),
+               signed_update(KEYS[1], topics[1]["topic"], 3, root_a, 1_800_000_000),
+               signed_update(KEYS[0], t0, 7, root_a, 1_790_000_124),   # equivocates with [1]
+               signed_update(KEYS[0], t0, 9, root_64, 1_790_000_200)]
+    for u in updates:
+        owner = pointer_for("x", u["key"]).owner
+        envelope = {"format": FEED_UPDATE_FORMAT, "version": 1, "owner": owner,
+                    "topic": u["topic"], "index": u["index"], "soc": u["soc"]}
+        verified = verify_feed_update(envelope, owner, u["topic"])
+        u.update(owner=owner, envelope=envelope,
+                 verified={"index": verified.index, "root": verified.root,
+                           "timestamp": verified.timestamp})
+    equivocation_index = verify_equivocation(updates[1]["envelope"], updates[3]["envelope"],
+                                             updates[1]["owner"], t0)
+    # Each must be refused by Python, and so by JavaScript.
+    bad = []
+    for name, tamper in [
+        ("signature byte flipped", lambda e: {**e, "soc": e["soc"][:66] + ("00" if e["soc"][66:68] != "00" else "01") + e["soc"][68:]}),
+        ("payload byte flipped", lambda e: {**e, "soc": e["soc"][:-2] + ("00" if e["soc"][-2:] != "00" else "01")}),
+        ("claims another index", lambda e: {**e, "index": e["index"] + 1}),
+        ("claims another owner", lambda e: {**e, "owner": "00" * 20}),
+    ]:
+        envelope = tamper(updates[0]["envelope"])
+        try:
+            verify_feed_update(envelope, envelope["owner"], t0)
+            raise AssertionError(f"Python accepted a tampered update: {name}")
+        except ProofError:
+            bad.append({"name": name, "envelope": envelope})
+    return {"owners": owners, "topics": topics, "addresses": addresses,
+            "updates": updates, "equivocation": {"a": 1, "b": 3, "index": equivocation_index},
+            "refused": bad}
+
+
+# ---------------------------------------------------------------------------
 
 def fixtures():
     note = ("Generated by js/tools/make_fixtures.py from the Python "
@@ -345,6 +443,7 @@ def fixtures():
         "stores.json": {"note": note, "cases": store_cases()},
         "merges.json": {"note": note, "resolver": "ours wins: DELETE if ours "
                         "is ABSENT, else ours", "cases": merge_cases()},
+        "feeds.json": {"note": note, **feed_cases()},
     }
 
 
