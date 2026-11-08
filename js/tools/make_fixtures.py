@@ -430,6 +430,114 @@ def feed_cases():
 
 
 # ---------------------------------------------------------------------------
+# Proofs: key inclusion and absence, prefixes, extensions
+# ---------------------------------------------------------------------------
+
+def proof_ops():
+    """A store that changes in two steps: `log/` only grows, other keys
+    change, so the second root extends the first under 'log/' and not
+    under ''."""
+    first = [("put", f"log/{i}", {"event": i}) for i in range(1, 6)] + [
+        ("put", "state/x", "old"), ("put", "state/y", [1, 2]), ("put", "é", "é"),
+        ("put", "😀", None), ("put", "users/alice", {"n": "Alice"}),
+        ("put", "users/al", 0.5), ("commit",)]
+    second = [("put", "log/6", {"event": 6}), ("put", "state/x", "new"),
+              ("delete", "users/al"), ("put", "zz", True), ("commit",)]
+    return first, second
+
+
+def proof_cases():
+    from recordstore import ABSENT, ProofError, verify_extension, verify_prefix, verify_proof
+
+    cases = []
+    first, second = proof_ops()
+    keys = ["log/3", "state/x", "users/alice", "users/al", "users/a", "users/alicex",
+            "é", "😀", "nope", "log/", "zzz"]
+    prefixes = ["", "log/", "users/", "users/al", "state/", "é", "zz", "x"]
+    for addressing in ("sha256", "swarm"):
+        blobs = new_store(addressing)
+        store = RecordStore(blobs)
+        empty = {"key": "anything", "proof": store.prove("anything", addressing=addressing)}
+        for op in first:
+            _apply(store, op)
+        root_a = store.root
+        for op in second:
+            _apply(store, op)
+        root_b = store.root
+        a = RecordStore.at(root_a, blobs)
+        b = RecordStore.at(root_b, blobs)
+
+        def key_proof(s, k):
+            p = s.prove(k, addressing=addressing)
+            v = verify_proof(p, s.root)
+            return {"key": k, "proof": p, "present": v is not ABSENT,
+                    "value": None if v is ABSENT else v}
+
+        def prefix_proof(s, pre):
+            p = s.prove_prefix(pre, addressing=addressing)
+            return {"prefix": pre, "proof": p, "records": sorted(verify_prefix(p, s.root).items())}
+
+        extensions = []
+        for base, later, pres in [(root_a, root_b, ["log/"]), (root_a, root_b, ["log/", "é", "😀"]),
+                                  (None, root_b, [""]), (root_b, root_b, [""]),
+                                  (root_a, root_b, [""]), (root_a, root_b, ["state/"]),
+                                  (root_a, root_b, ["users/"])]:
+            s = RecordStore.at(later, blobs)
+            entry = {"base": base, "root": later, "prefixes": pres,
+                     "extends": s.extends(base, pres)}
+            try:
+                p = s.prove_extension(base, pres, addressing=addressing)
+                entry["proof"] = p
+                entry["proven"] = list(verify_extension(p, base, later))
+            except ValueError as e:
+                entry["error"] = str(e)
+            extensions.append(entry)
+
+        refused = []
+        good = key_proof(b, "log/3")["proof"]
+        node0 = good["nodes"][0]
+        for name, envelope, against in [
+            ("a node byte changed", {**good, "nodes": [node0[:-2] + ("00" if node0[-2:] != "00" else "01")] + good["nodes"][1:]}, root_b),
+            ("the value changed", {**good, "value": good["value"][:-4] + "3030"}, root_b),
+            ("claims absence", {**good, "present": False, "value": None}, root_b),
+            ("about another root", good, root_a),
+            ("the last node dropped", {**good, "nodes": good["nodes"][:-1]}, root_b),
+        ]:
+            try:
+                verify_proof(envelope, against)
+                raise AssertionError(f"Python accepted a tampered proof: {name}")
+            except ProofError:
+                refused.append({"kind": "key", "name": name, "envelope": envelope, "root": against})
+        whole = b.prove_prefix("users/", addressing=addressing)
+        try:
+            verify_prefix({**whole, "nodes": whole["nodes"][1:]}, root_b)
+            raise AssertionError("Python accepted a prefix proof missing a node")
+        except ProofError:
+            refused.append({"kind": "prefix", "name": "a node missing",
+                            "envelope": {**whole, "nodes": whole["nodes"][1:]}, "root": root_b})
+        ext = b.prove_extension(root_a, ["log/"], addressing=addressing)
+        try:
+            verify_extension({**ext, "prefixes": [""]}, root_a, root_b)
+            raise AssertionError("Python accepted an extension proof for a wider prefix")
+        except ProofError:
+            refused.append({"kind": "extension", "name": "claims a wider prefix",
+                            "envelope": {**ext, "prefixes": [""]}, "base": root_a, "root": root_b})
+
+        cases.append({
+            "addressing": addressing,
+            "first": [_op_json(op) for op in first],
+            "second": [_op_json(op) for op in second],
+            "roots": {"a": root_a, "b": root_b},
+            "empty": empty,
+            "keys": [key_proof(s, k) for s in (a, b) for k in keys],
+            "prefixes": [prefix_proof(s, p) for s in (a, b) for p in prefixes],
+            "extensions": extensions,
+            "refused": refused,
+        })
+    return cases
+
+
+# ---------------------------------------------------------------------------
 
 def fixtures():
     note = ("Generated by js/tools/make_fixtures.py from the Python "
@@ -444,6 +552,7 @@ def fixtures():
         "merges.json": {"note": note, "resolver": "ours wins: DELETE if ours "
                         "is ABSENT, else ours", "cases": merge_cases()},
         "feeds.json": {"note": note, **feed_cases()},
+        "proofs.json": {"note": note, "cases": proof_cases()},
     }
 
 

@@ -9,7 +9,10 @@
 
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { BeeBytesStore, RecordStore, SwarmFeedPointer, swarmStore, verifyFeedUpdate } from '../src/index.js';
+import { writeFileSync } from 'node:fs';
+import {
+  BeeBytesStore, RecordStore, SwarmFeedPointer, swarmStore, verifyFeedUpdate, verifyPrefix, verifyProof,
+} from '../src/index.js';
 import { toHex } from '../src/bytes.js';
 
 const url = process.env.RECORDSTORE_BEE_URL;
@@ -70,4 +73,19 @@ test('publishes a store behind a new feed and follows it', { skip: skip || (!bat
   const updates = await follower._pointer.updates();
   assert.deepEqual(updates.map((u) => verifyFeedUpdate(u, writer._pointer.owner, topic).root), [first, second]);
   console.log(`# wrote feed ${topic} (owner ${writer._pointer.owner}): roots ${first.slice(0, 12)}..., ${second.slice(0, 12)}...`);
+});
+
+test('proves records of a published store, checkable with no node', { skip }, async () => {
+  const store = RecordStore.at(root, new BeeBytesStore(url, { concurrency: 32 }));
+  const started = Date.now();
+  const proof = await store.prove('abbey');
+  assert.deepEqual(await verifyProof(proof, root), await store.get('abbey'));
+  const absent = await store.prove('abbeyz');
+  assert.equal(absent.present, false);
+  const prefix = await store.provePrefix('ab');
+  const records = await verifyPrefix(prefix, root);
+  assert.ok(records.size > 0);
+  if (process.env.RECORDSTORE_PROOF_OUT) writeFileSync(process.env.RECORDSTORE_PROOF_OUT, JSON.stringify({ root, proof, absent, prefix }));
+  const size = (p) => JSON.stringify(p).length;
+  console.log(`# key proof ${proof.nodes.length} nodes / ${size(proof)} B, absence ${size(absent)} B, prefix 'ab' ${records.size} records / ${size(prefix)} B, ${Date.now() - started} ms`);
 });

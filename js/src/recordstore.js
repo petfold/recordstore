@@ -8,8 +8,12 @@
 // - `has` is Python's `contains`.
 
 import { canonicalCopy, decodeValue, encodeValue } from './canonical.js';
-import { hexUtf8, isWellFormed, utf8Hex } from './bytes.js';
+import { compareCodePoints, hexUtf8, isWellFormed, toHex, utf8Hex } from './bytes.js';
 import { DEFAULT_NODE_CACHE_SIZE, KeyMissing, Trie } from './trie.js';
+import {
+  EXTENSION_FORMAT, PREFIX_FORMAT, PROOF_FORMAT, addressingName, checkPrefixes, extensionWalk, itemsUnder,
+  verifyExtension, verifyPrefix, verifyProof,
+} from './proofs.js';
 
 /** A side of a diff or merge where the key is absent. */
 export const ABSENT = Symbol.for('recordstore.ABSENT');
@@ -268,6 +272,124 @@ export class RecordStore {
   /** ['node', ref] / ['value', ref] for every blob the keys under `prefix` need in the committed root. */
   refsUnder(prefix = '') {
     return this._trie.refsUnder(this._root, prefixHex(prefix));
+  }
+
+  // -- proofs ---------------------------------------------------------------
+
+  /**
+   * A proof that `key` holds its record in the committed root, or that it is
+   * absent: the raw nodes on the key's one possible path, and the value.
+   * `verifyProof(proof, root)` checks it with no store. Refused for a key
+   * with staged changes (proofs are about committed roots). `addressing`
+   * defaults to the bytes store's. Every proof is checked before it is
+   * returned.
+   */
+  async prove(key, { addressing } = {}) {
+    const kh = keyHex(key);
+    if (this._staged.has(key)) {
+      throw new Error(`${JSON.stringify(key)} has staged, uncommitted changes; proofs are statements about a committed root, commit() first`);
+    }
+    const name = addressing ?? addressingName(this._blobs);
+    const nodes = [];
+    let present = false;
+    let value = null;
+    let ref = this._root;
+    let remaining = kh;
+    while (ref !== null) {
+      const blob = await this._blobs.get(ref); // the exact bytes behind the reference
+      nodes.push(toHex(blob));
+      const node = Trie.decode(blob);
+      if (!remaining.startsWith(node.prefix)) break;
+      remaining = remaining.slice(node.prefix.length);
+      if (remaining === '') {
+        if (node.valueRef !== null) {
+          present = true;
+          value = toHex(await this._blobs.get(node.valueRef));
+        }
+        break;
+      }
+      ref = node.children.get(remaining.slice(0, 2)) ?? null;
+      remaining = remaining.slice(2);
+    }
+    const proof = { format: PROOF_FORMAT, version: 1, addressing: name, root: this._root, key, present, nodes, value };
+    await verifyProof(proof, this._root); // never hand out a broken proof
+    return proof;
+  }
+
+  /**
+   * A proof of every record under `prefix` ('' for the whole store) in the
+   * committed root, and of no others. `verifyPrefix(proof, root)` returns
+   * them all. Its size is the size of what is under the prefix.
+   */
+  async provePrefix(prefix = '', { addressing } = {}) {
+    if (typeof prefix !== 'string') throw new TypeError("prefix is a string ('' for every key)");
+    const staged = [...this._staged.keys()].filter((k) => k.startsWith(prefix)).sort(compareCodePoints);
+    if (staged.length) throw new Error(`${JSON.stringify(staged[0])} has staged, uncommitted changes under the prefix; commit() first`);
+    const name = addressing ?? addressingName(this._blobs);
+    const nodes = new Map();
+    const values = new Map();
+    const load = async (ref) => {
+      const blob = await this._blobs.get(ref);
+      nodes.set(ref, toHex(blob));
+      return Trie.decode(blob);
+    };
+    if (this._root !== null) {
+      for await (const [, valueRef] of itemsUnder(load, await load(this._root), '', prefixHex(prefix))) {
+        values.set(valueRef, toHex(await this._blobs.get(valueRef)));
+      }
+    }
+    const proof = {
+      format: PREFIX_FORMAT, version: 1, addressing: name, root: this._root, prefix,
+      nodes: [...nodes.values()].sort(), values: [...values.values()].sort(),
+    };
+    await verifyPrefix(proof, this._root);
+    return proof;
+  }
+
+  /**
+   * Does the committed root hold, under each of `prefixes`, every record
+   * `base` held, unchanged (additions allowed)? `base`'s nodes must be in
+   * this store's bytes store.
+   */
+  async extends(base, prefixes = ['']) {
+    const load = (ref) => this._trie.load(ref);
+    for (const p of checkPrefixes(prefixes)) {
+      const faults = extensionWalk(load, base ?? null, this._root, prefixHex(p));
+      if (!(await faults.next()).done) return false;
+    }
+    return true;
+  }
+
+  /**
+   * A proof that the committed root extends `base` under `prefixes`: no
+   * record `base` held under them was removed or changed. Its nodes are
+   * those of the two roots along what changed under the prefixes. Throws
+   * when the root does not extend `base` (naming the key).
+   */
+  async proveExtension(base, prefixes = [''], { addressing } = {}) {
+    const list = checkPrefixes(prefixes);
+    const staged = [...this._staged.keys()].filter((k) => list.some((p) => k.startsWith(p)));
+    if (staged.length) throw new Error(`${JSON.stringify(staged[0])} has staged, uncommitted changes under the prefixes; commit() first`);
+    const name = addressing ?? addressingName(this._blobs);
+    const blobs = new Map();
+    const load = async (ref) => {
+      const blob = await this._blobs.get(ref);
+      blobs.set(ref, toHex(blob));
+      return Trie.decode(blob);
+    };
+    base = base ?? null;
+    for (const prefix of list) {
+      for await (const [key, , b] of extensionWalk(load, base, this._root, prefixHex(prefix))) {
+        throw new Error(`${JSON.stringify(this._root)} does not extend ${JSON.stringify(base)} under ${JSON.stringify(prefix)}: `
+          + `${JSON.stringify(hexUtf8(key))} is ${b === null ? 'absent from' : 'changed in'} it`);
+      }
+    }
+    const proof = {
+      format: EXTENSION_FORMAT, version: 1, addressing: name, base, root: this._root,
+      prefixes: list, nodes: [...blobs.values()].sort(),
+    };
+    await verifyExtension(proof, base, this._root);
+    return proof;
   }
 
   // -- writing --------------------------------------------------------------

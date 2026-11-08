@@ -71,7 +71,7 @@ class NodeCache {
 }
 
 /** Longest common prefix of two hex strings, on a byte boundary. */
-function commonPrefix(a, b) {
+export function commonPrefix(a, b) {
   const n = Math.min(a.length, b.length);
   let i = 0;
   while (i < n && a[i] === b[i]) i++;

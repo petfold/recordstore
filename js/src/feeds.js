@@ -20,6 +20,7 @@ import { getPublicKey, signAsync, Signature } from '../vendor/noble-secp256k1/in
 import { chunkAddress, encodeSpan, keccak256Bytes } from './address.js';
 import { concatBytes, fromBase64, fromHex, toHex, utf8 } from './bytes.js';
 import { VerificationError } from './stores.js';
+import { ProofError } from './proofs.js';
 
 export const FEED_UPDATE_FORMAT = 'recordstore-feed-update';
 
@@ -28,14 +29,6 @@ const SOC_SIGNATURE_SIZE = 65;
 const SOC_SPAN_OFFSET = SOC_IDENTIFIER_SIZE + SOC_SIGNATURE_SIZE; // 97
 const SOC_PAYLOAD_OFFSET = SOC_SPAN_OFFSET + 8; // 105
 const ETH_PREFIX = utf8('\x19Ethereum Signed Message:\n32');
-
-/** A feed update envelope (or pair of them) that does not prove what it claims. */
-export class ProofError extends Error {
-  constructor(message) {
-    super(message);
-    this.name = 'ProofError';
-  }
-}
 
 /** A transport's answer for a chunk or lookup: `status` 404 means absent, 500 an incomplete retrieval. */
 export class FeedTransportError extends Error {

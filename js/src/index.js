@@ -15,7 +15,10 @@ export {
 } from './address.js';
 export { DEFAULT_NODE_CACHE_SIZE } from './trie.js';
 export {
-  SwarmFeedPointer, BeeFeedTransport, ProviderFeedTransport, FeedTransportError, ProofError,
+  SwarmFeedPointer, BeeFeedTransport, ProviderFeedTransport, FeedTransportError,
   verifyFeedUpdate, verifyEquivocation, FEED_UPDATE_FORMAT, topicOf, feedIdentifier, socAddress, addressOf,
 } from './feeds.js';
+export {
+  ProofError, verifyProof, verifyPrefix, verifyExtension, PROOF_FORMAT, PREFIX_FORMAT, EXTENSION_FORMAT,
+} from './proofs.js';
 export { swarmStore } from './swarm.js';

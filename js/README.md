@@ -10,9 +10,10 @@ in both: byte for byte, under SHA-256 or Swarm addressing.
 against the Python implementation: records, staging, commits, sorted
 iteration, diff, three-way merge, and reconciling a moved pointer. Stores for
 memory, a Bee node, and Freedom Browser's `window.swarm`; the store's latest
-root in a Swarm feed (`SwarmFeedPointer`), with feed updates verifiable
-offline. Not yet ported: the other proofs, history and undo, local-first
-storage.
+root in a Swarm feed (`SwarmFeedPointer`); and proofs anyone can check with
+no store: a key's record or its absence, everything under a prefix, a later
+root extending an earlier one, a feed's signed updates. Not yet ported:
+history and undo, local-first storage.
 
 Plain JavaScript modules with JSDoc types and no npm dependencies, so a page
 can import it with relative URLs only, including a page published on Swarm.
@@ -105,6 +106,38 @@ to its root with its 8 records (12 s); the OntoDAG page's feed read with its
 feed from JavaScript, then followed from JavaScript and from Python, which
 read the same root and records and verified both updates.
 
+## Proofs
+
+A root is a commitment to a whole store, so a store can prove statements
+about it that anyone holding only the root can check: no store, no network,
+no trust in the prover. An envelope carries the raw trie nodes (and values);
+the verifier recomputes their references and replays the walk. The trie is
+canonical, so a key has one possible place under a root, and absence is as
+provable as presence.
+
+```js
+const proof = await store.prove('users/alice');           // inclusion, or absence
+await verifyProof(proof, root);                           // the record, or ABSENT
+
+const all = await store.provePrefix('users/');           // every record under it, and no others
+await verifyPrefix(all, root);                            // a Map, proven complete
+
+const grew = await store.proveExtension(oldRoot, ['log/']);  // nothing under log/ removed or changed
+await verifyExtension(grew, oldRoot, root);                  // the prefixes proven
+```
+
+Each envelope is checked before it is handed out, and a verifier rejects
+with `ProofError`. The formats are Python's (`recordstore-trie-proof`,
+`-prefix-proof`, `-extension-proof`, version 1), and the same store gives
+the same envelope in both languages: the fixtures require JavaScript's
+proofs to equal Python's, field for field. Verifiers return promises,
+because Web Crypto's SHA-256 is asynchronous.
+
+Live on 8 November 2026: proofs about OntoDAG's `space` pack, made through
+Bee in 0.4 s, that `abbey` holds its record (4 nodes, 8.4 KB as JSON), that
+`abbeyz` is absent (8.2 KB), and of the 11 records under `ab` (13 KB), all
+three accepted by Python's verifiers.
+
 ### In Freedom Browser
 
 A page in Freedom cannot reach a node's HTTP API; it has `window.swarm`.
@@ -171,6 +204,10 @@ Shaped like the Python one, but asynchronous and JavaScript-idiomatic:
 | `await swarmStore(topic, {url, signer \| owner, batch})` | a store on Swarm behind its feed |
 | `new SwarmFeedPointer(urlOrTransport, topic, {signer \| owner, batch})` | the feed pointer: `get`, `set`, `compareAndSet`, `update(i)`, `updates()` |
 | `verifyFeedUpdate(envelope, owner, topic)` | `{index, root, timestamp}` of a signed update, checked offline; `ProofError` otherwise |
+| `await store.prove(key)` / `verifyProof(proof, root)` | a key's record or its absence, proven |
+| `await store.provePrefix(prefix)` / `verifyPrefix(proof, root)` | every record under a prefix, proven complete (a `Map`) |
+| `await store.extends(base, prefixes)` | does the root keep every record `base` held under the prefixes? |
+| `await store.proveExtension(base, prefixes)` / `verifyExtension(proof, base, root)` | that it does, proven |
 
 Errors: `RecordUnavailable` when a record exists but a blob on its path cannot
 be read right now (never reported as absence), `MergeConflict`,
@@ -221,7 +258,8 @@ node test/freedom/freedom_check.cjs --bee=http://127.0.0.1:1633 --write   # spen
 `test/fixtures/` is written by `tools/make_fixtures.py`, which runs the Python
 implementation in `../src` (not an installed copy) and records canonical
 encodings, Swarm addresses, the root after every commit of scripted and random
-stores under both addressings, three-way merges, and feeds: topics, owners,
+stores under both addressings, three-way merges, proofs (key, prefix and
+extension envelopes, their verdicts, and tampered ones Python refuses), and feeds: topics, owners,
 update addresses, signed updates written by swarmfs's own code (so JavaScript
 must reproduce the signatures byte for byte), and updates Python refuses. It
 needs swarmfs with signing (`pip install "recordstore[bee,feeds]"`). The JavaScript tests
@@ -231,8 +269,6 @@ fails while the fixtures are stale.
 
 ## Not yet ported
 
-- Proofs (`verify_proof`, `verify_prefix`, `verify_extension`); feed updates
-  are ported.
 - History, undo and redo (`FilePointer`'s timeline).
 - Local-first storage.
 
